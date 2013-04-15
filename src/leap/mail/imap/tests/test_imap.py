@@ -49,6 +49,7 @@ import u1db
 
 from leap.common.testing.basetest import BaseLeapTest
 from leap.mail.imap.server import SoledadMailbox
+from leap.mail.imap.server import SoledadBackedAccount
 from leap.mail.imap.tests import PUBLIC_KEY
 from leap.mail.imap.tests import PRIVATE_KEY
 
@@ -74,57 +75,53 @@ def sortNest(l):
 
 def initialize_soledad(email, gnupg_home, tempdir):
     """
-    initializes soledad by hand
+    Initializes soledad by hand
+
+    @param email: ID for the user
+    @param gnupg_home: path to home used by gnupg
+    @param tempdir: path to temporal dir
+    @rtype: Soledad instance
     """
     _soledad = Soledad(email, gnupg_home=gnupg_home,
-                            initialize=False,
-                            prefix=tempdir)
+                       bootstrap=False,
+                       prefix=tempdir)
     _soledad._init_dirs()
     _soledad._gpg = GPGWrapper(gnupghome=gnupg_home)
-    _soledad._gpg.import_keys(PUBLIC_KEY)
-    _soledad._gpg.import_keys(PRIVATE_KEY)
-    _soledad._load_openpgp_keypair()
-    if not _soledad._has_secret():
-        _soledad._gen_secret()
-    _soledad._load_secret()
+
+    if not _soledad._has_privkey():
+        _soledad._set_privkey(PRIVATE_KEY)
+    if not _soledad._has_symkey():
+        _soledad._gen_symkey()
+    _soledad._load_symkey()
     _soledad._init_db()
+
     return _soledad
 
 
 ##########################################
-# account, simpleserver
+# simple LEAP IMAP4 server
 ##########################################
 
-
-class SoledadBackedAccount(imap4.MemoryAccount):
-    #mailboxFactory = SimpleMailbox
-    mailboxFactory = SoledadMailbox
-    soledadInstance = None
-
-    # XXX should reimplement IAccount -> SoledadAccount
-    # and receive the soledad instance on the constructor.
-    # SoledadMailbox should allow to filter by mailbox name
-    # _soledad db should include mailbox field
-    # and a document with "INDEX" info (mailboxes / subscriptions)
-
-    def _emptyMailbox(self, name, id):
-        return self.mailboxFactory(self.soledadInstance)
-
-    def select(self, name, rw=1):
-        # XXX rethink this.
-        # Need to be classmethods...
-        mbox = imap4.MemoryAccount.select(self, name)
-        if mbox is not None:
-            mbox.rw = rw
-        return mbox
-
-
 class SimpleLEAPServer(imap4.IMAP4Server):
+    """
+    A Simple IMAP4 Server
+    with mailboxes backed by SOLEDAD.
+
+    This should be pretty close to the real LeapIMAP4Server that we
+    will be instantiating as a service, minus the authentication bits.
+    """
     def __init__(self, *args, **kw):
+
+        soledad = kw.pop('soledad', None)
+
         imap4.IMAP4Server.__init__(self, *args, **kw)
         realm = TestRealm()
-        realm.theAccount = SoledadBackedAccount('testuser')
-        # XXX soledadInstance here?
+
+        # XXX Why I AM PASSING THE ACCOUNT TO
+        # REALM? I AM NOT USING  THAT NOW, AM I???
+        realm.theAccount = SoledadBackedAccount(
+            'testuser',
+            soledad=soledad)
 
         portal = cred.portal.Portal(realm)
         c = cred.checkers.InMemoryUsernamePasswordDatabaseDontUse()
@@ -155,12 +152,17 @@ class TestRealm:
     def requestAvatar(self, avatarId, mind, *interfaces):
         return imap4.IAccount, self.theAccount, lambda: None
 
+
 ######################
-# Test LEAP Server
+# Test IMAP4 Client
 ######################
 
 
 class SimpleClient(imap4.IMAP4Client):
+    """
+    A Simple IMAP4 Client to test our
+    Soledad-LEAPServer
+    """
 
     def __init__(self, deferred, contextFactory=None):
         imap4.IMAP4Client.__init__(self, contextFactory)
@@ -184,12 +186,28 @@ class SimpleClient(imap4.IMAP4Client):
 
 
 class IMAP4HelperMixin(BaseLeapTest):
+    """
+    MixIn containing several utilities to be shared across
+    different TestCases
+    """
 
     serverCTX = None
     clientCTX = None
 
     @classmethod
     def setUpClass(cls):
+        """
+        TestCase initialization setup.
+        Sets up a new environment.
+        Initializes a SINGLE Soledad Instance that will be shared
+        by all tests in this base class.
+        This breaks orthogonality, avoiding us to use trial, so we should
+        move away from this test design. But it's a quick way to get
+        started without knowing / mocking the soledad api.
+
+        We do also some duplication with BaseLeapTest cause trial and nose
+        seem not to deal well with deriving classmethods.
+        """
         cls.old_path = os.environ['PATH']
         cls.old_home = os.environ['HOME']
         cls.tempdir = tempfile.mkdtemp(prefix="leap_tests-")
@@ -217,10 +235,19 @@ class IMAP4HelperMixin(BaseLeapTest):
             cls.gnupg_home,
             cls.tempdir)
 
-        cls.sm = SoledadMailbox(soledad=cls._soledad)
+        # now we're passing the mailbox name, so we
+        # should get this into a partial or something.
+        #cls.sm = SoledadMailbox("mailbox", soledad=cls._soledad)
+        # XXX REFACTOR --- self.server (in setUp) is initializing
+        # a SoledadBackedAccount
 
     @classmethod
     def tearDownClass(cls):
+        """
+        TestCase teardown method.
+        Restores the old path and home environment variables.
+        Removes the temporal dir created for tests.
+        """
         #cls._db1.close()
         #cls._db2.close()
         cls._soledad.close()
@@ -232,25 +259,59 @@ class IMAP4HelperMixin(BaseLeapTest):
         shutil.rmtree(cls.tempdir)
 
     def setUp(self):
+        """
+        Setup method for each test.
+        Initializes and run a LEAP IMAP4 Server,
+        but passing the same Soledad instance (it's costly to initialize),
+        so we have to be sure to restore state across tests.
+        """
         d = defer.Deferred()
-        self.server = SimpleLEAPServer(contextFactory=self.serverCTX)
+        self.server = SimpleLEAPServer(
+            contextFactory=self.serverCTX,
+
+            # XXX do we really need this??
+            soledad=self._soledad)
+
         self.client = SimpleClient(d, contextFactory=self.clientCTX)
         self.connected = d
 
-        theAccount = SoledadBackedAccount('testuser')
-        theAccount.soledadInstance = self._soledad
+        # XXX REVIEW-ME.
+        # We're adding theAccount here to server
+        # but it was also passed to initialization
+        # as it was passed to realm.
+        # I THINK we ONLY need to do it at one place now.
 
+        theAccount = SoledadBackedAccount(
+            'testuser',
+            soledad=self._soledad)
+
+        # XXX and this ? what for?
+        theAccount.soledadInstance = self._soledad
         # XXX used for something???
         #theAccount.mboxType = SoledadMailbox
         SimpleLEAPServer.theAccount = theAccount
 
     def tearDown(self):
+        """
+        tearDown method called after each test.
+
+        Deletes all documents in the Index, and deletes
+        instances of server and client.
+        """
         self.delete_all_docs()
         del self.server
         del self.client
         del self.connected
 
     def populateMessages(self):
+        """
+        Populates soledad instance with several simple messages
+        """
+        # XXX we should encapsulate this thru SoledadBackedAccount
+        # instead.
+
+        # XXX we also should put this in a mailbox!
+
         self._soledad.messages.add_msg(subject="test1")
         self._soledad.messages.add_msg(subject="test2")
         self._soledad.messages.add_msg(subject="test3")
@@ -258,7 +319,12 @@ class IMAP4HelperMixin(BaseLeapTest):
         self._soledad.messages.add_msg(subject="test4")
 
     def delete_all_docs(self):
-        self.server.theAccount.messages.deleteAllDocs()
+        """
+        Deletes all the docs in the testing instance of the
+        SoledadBackedAccount.
+        """
+        self.server.theAccount.deleteAllMessages(
+            iknowhatiamdoing=True)
 
     def _cbStopClient(self, ignore):
         self.client.transport.loseConnection()
@@ -272,7 +338,262 @@ class IMAP4HelperMixin(BaseLeapTest):
         return loopback.loopbackAsync(self.server, self.client)
 
 
-class IMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
+#
+# TestCases
+#
+
+class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
+    """
+    Tests for the generic behavior of the LeapIMAP4Server
+    which, right now, it's just implemented in this test file as
+    SimpleLEAPServer. We will move the implementation, together with
+    authentication bits, to leap.mail.imap.server so it can be instantiated
+    from the tac file.
+
+    Right now this TestCase tries to mimmick as close as possible the
+    organization from the twisted.mail.imap tests so we can achieve
+    a complete implementation. The order in which they appear reflect
+    the intended order of implementation.
+    """
+
+    def testCreate(self):
+        """
+        Test whether we can create mailboxes
+        """
+        succeed = ('testbox', 'test/box', 'test/', 'test/box/box', 'INBOX')
+        fail = ('testbox', 'test/box')
+
+        def cb():
+            self.result.append(1)
+
+        def eb(failure):
+            self.result.append(0)
+
+        def login():
+            return self.client.login('testuser', 'password-test')
+
+        def create():
+            for name in succeed + fail:
+                d = self.client.create(name)
+                d.addCallback(strip(cb)).addErrback(eb)
+            d.addCallbacks(self._cbStopClient, self._ebGeneral)
+
+        self.result = []
+        d1 = self.connected.addCallback(strip(login)).addCallback(
+            strip(create))
+        d2 = self.loopback()
+        d = defer.gatherResults([d1, d2])
+        return d.addCallback(self._cbTestCreate, succeed, fail)
+
+    def _cbTestCreate(self, ignored, succeed, fail):
+        self.assertEqual(self.result, [1] * len(succeed) + [0] * len(fail))
+
+        # XXX get name of mailboxes
+        mbox = SimpleLEAPServer.theAccount.listMailboxes()
+        #mbox = SimpleLEAPServer.theAccount.mailboxes.keys()
+        answers = ['inbox', 'testbox', 'test/box', 'test', 'test/box/box']
+        mbox.sort()
+        answers.sort()
+        self.assertEqual(mbox, [a.upper() for a in answers])
+
+    def testDelete(self):
+        SimpleLEAPServer.theAccount.addMailbox('delete/me')
+
+        def login():
+            return self.client.login('testuser', 'password-test')
+
+        def delete():
+            return self.client.delete('delete/me')
+
+        d1 = self.connected.addCallback(strip(login))
+        d1.addCallbacks(strip(delete), self._ebGeneral)
+        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
+        d2 = self.loopback()
+        d = defer.gatherResults([d1, d2])
+        d.addCallback(
+            lambda _: self.assertEqual(
+                SimpleLEAPServer.theAccount.mailboxes.keys(), []))
+        return d
+
+    def testIllegalInboxDelete(self):
+        self.stashed = None
+
+        def login():
+            return self.client.login('testuser', 'password-test')
+
+        def delete():
+            return self.client.delete('inbox')
+
+        def stash(result):
+            self.stashed = result
+
+        d1 = self.connected.addCallback(strip(login))
+        d1.addCallbacks(strip(delete), self._ebGeneral)
+        d1.addBoth(stash)
+        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
+        d2 = self.loopback()
+        d = defer.gatherResults([d1, d2])
+        d.addCallback(lambda _: self.failUnless(isinstance(self.stashed,
+                                                           failure.Failure)))
+        return d
+
+    def testNonExistentDelete(self):
+
+        def login():
+            return self.client.login('testuser', 'password-test')
+
+        def delete():
+            return self.client.delete('delete/me')
+            self.failure = failure
+
+        def deleteFailed(failure):
+            self.failure = failure
+
+        self.failure = None
+        d1 = self.connected.addCallback(strip(login))
+        d1.addCallback(strip(delete)).addErrback(deleteFailed)
+        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
+        d2 = self.loopback()
+        d = defer.gatherResults([d1, d2])
+        d.addCallback(lambda _: self.assertEqual(str(self.failure.value),
+                                                 'No such mailbox'))
+        return d
+
+    def testIllegalDelete(self):
+        m = SoledadMailbox()
+        m.flags = (r'\Noselect',)
+        SimpleLEAPServer.theAccount.addMailbox('delete', m)
+        SimpleLEAPServer.theAccount.addMailbox('delete/me')
+
+        def login():
+            return self.client.login('testuser', 'password-test')
+
+        def delete():
+            return self.client.delete('delete')
+
+        def deleteFailed(failure):
+            self.failure = failure
+
+        self.failure = None
+        d1 = self.connected.addCallback(strip(login))
+        d1.addCallback(strip(delete)).addErrback(deleteFailed)
+        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
+        d2 = self.loopback()
+        d = defer.gatherResults([d1, d2])
+        expected = ("Hierarchically inferior mailboxes exist "
+                    "and \\Noselect is set")
+        d.addCallback(lambda _:
+                      self.assertEqual(str(self.failure.value), expected))
+        return d
+
+    def testRename(self):
+        SimpleLEAPServer.theAccount.addMailbox('oldmbox')
+
+        def login():
+            return self.client.login('testuser', 'password-test')
+
+        def rename():
+            return self.client.rename('oldmbox', 'newname')
+
+        d1 = self.connected.addCallback(strip(login))
+        d1.addCallbacks(strip(rename), self._ebGeneral)
+        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
+        d2 = self.loopback()
+        d = defer.gatherResults([d1, d2])
+        d.addCallback(lambda _:
+                      self.assertEqual(
+                          SimpleLEAPServer.theAccount.mailboxes.keys(),
+                          ['NEWNAME']))
+        return d
+
+    def testIllegalInboxRename(self):
+        self.stashed = None
+
+        def login():
+            return self.client.login('testuser', 'password-test')
+
+        def rename():
+            return self.client.rename('inbox', 'frotz')
+
+        def stash(stuff):
+            self.stashed = stuff
+
+        d1 = self.connected.addCallback(strip(login))
+        d1.addCallbacks(strip(rename), self._ebGeneral)
+        d1.addBoth(stash)
+        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
+        d2 = self.loopback()
+        d = defer.gatherResults([d1, d2])
+        d.addCallback(lambda _:
+                      self.failUnless(isinstance(
+                          self.stashed, failure.Failure)))
+        return d
+
+    def testHierarchicalRename(self):
+        SimpleLEAPServer.theAccount.create('oldmbox/m1')
+        SimpleLEAPServer.theAccount.create('oldmbox/m2')
+
+        def login():
+            return self.client.login('testuser', 'password-test')
+
+        def rename():
+            return self.client.rename('oldmbox', 'newname')
+
+        d1 = self.connected.addCallback(strip(login))
+        d1.addCallbacks(strip(rename), self._ebGeneral)
+        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
+        d2 = self.loopback()
+        d = defer.gatherResults([d1, d2])
+        return d.addCallback(self._cbTestHierarchicalRename)
+
+    def _cbTestHierarchicalRename(self, ignored):
+        mboxes = SimpleLEAPServer.theAccount.mailboxes.keys()
+        expected = ['newname', 'newname/m1', 'newname/m2']
+        mboxes.sort()
+        self.assertEqual(mboxes, [s.upper() for s in expected])
+
+    def testSubscribe(self):
+
+        def login():
+            return self.client.login('testuser', 'password-test')
+
+        def subscribe():
+            return self.client.subscribe('this/mbox')
+
+        d1 = self.connected.addCallback(strip(login))
+        d1.addCallbacks(strip(subscribe), self._ebGeneral)
+        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
+        d2 = self.loopback()
+        d = defer.gatherResults([d1, d2])
+        d.addCallback(lambda _:
+                      self.assertEqual(
+                          SimpleLEAPServer.theAccount.subscriptions,
+                          ['THIS/MBOX']))
+        return d
+
+    def testUnsubscribe(self):
+        SimpleLEAPServer.theAccount.subscriptions = ['THIS/MBOX', 'THAT/MBOX']
+
+        def login():
+            return self.client.login('testuser', 'password-test')
+
+        def unsubscribe():
+            return self.client.unsubscribe('this/mbox')
+
+        d1 = self.connected.addCallback(strip(login))
+        d1.addCallbacks(strip(unsubscribe), self._ebGeneral)
+        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
+        d2 = self.loopback()
+        d = defer.gatherResults([d1, d2])
+        d.addCallback(lambda _:
+                      self.assertEqual(
+                          SimpleLEAPServer.theAccount.subscriptions,
+                          ['THAT/MBOX']))
+        return d
+
+    #
+    # capabilities
+    #
 
     def testCapability(self):
         caps = {}
@@ -300,7 +621,8 @@ class IMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
                 self.server.transport.loseConnection()
             return self.client.getCapabilities().addCallback(gotCaps)
         d1 = self.connected.addCallback(
-           strip(getCaps)).addErrback(self._ebGeneral)
+            strip(getCaps)).addErrback(self._ebGeneral)
+
         d = defer.gatherResults([self.loopback(), d1])
 
         expCap = {'IMAP4rev1': None, 'NAMESPACE': None,
@@ -335,7 +657,8 @@ class IMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         def login():
             d = self.client.login('testuser', 'password-test')
             d.addCallback(self._cbStopClient)
-        d1 = self.connected.addCallback(strip(login)).addErrback(self._ebGeneral)
+        d1 = self.connected.addCallback(
+            strip(login)).addErrback(self._ebGeneral)
         d = defer.gatherResults([d1, self.loopback()])
         return d.addCallback(self._cbTestLogin)
 
@@ -348,7 +671,8 @@ class IMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
             d = self.client.login('testuser', 'wrong-password')
             d.addBoth(self._cbStopClient)
 
-        d1 = self.connected.addCallback(strip(login)).addErrback(self._ebGeneral)
+        d1 = self.connected.addCallback(
+            strip(login)).addErrback(self._ebGeneral)
         d2 = self.loopback()
         d = defer.gatherResults([d1, d2])
         return d.addCallback(self._cbTestFailedLogin)
@@ -356,7 +680,6 @@ class IMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
     def _cbTestFailedLogin(self, ignored):
         self.assertEqual(self.server.account, None)
         self.assertEqual(self.server.state, 'unauth')
-
 
     def testLoginRequiringQuoting(self):
         self.server._username = '{test}user'
@@ -366,7 +689,8 @@ class IMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
             d = self.client.login('{test}user', '{test}password')
             d.addBoth(self._cbStopClient)
 
-        d1 = self.connected.addCallback(strip(login)).addErrback(self._ebGeneral)
+        d1 = self.connected.addCallback(
+            strip(login)).addErrback(self._ebGeneral)
         d = defer.gatherResults([self.loopback(), d1])
         return d.addCallback(self._cbTestLoginRequiringQuoting)
 
@@ -374,11 +698,12 @@ class IMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         self.assertEqual(self.server.account, SimpleLEAPServer.theAccount)
         self.assertEqual(self.server.state, 'auth')
 
-
     def testNamespace(self):
         self.namespaceArgs = None
+
         def login():
             return self.client.login('testuser', 'password-test')
+
         def namespace():
             def gotNamespace(args):
                 self.namespaceArgs = args
@@ -391,7 +716,7 @@ class IMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         d2 = self.loopback()
         d = defer.gatherResults([d1, d2])
         d.addCallback(lambda _: self.assertEqual(self.namespaceArgs,
-                                                  [[['', '/']], [], []]))
+                                                 [[['', '/']], [], []]))
         return d
 
     def testSelect(self):
@@ -469,229 +794,6 @@ class IMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
             'FLAGS': ('\\Seen', '\\Answered', '\\Flagged',
                       '\\Deleted', '\\Draft', '\\Recent', 'List'),
             'READ-WRITE': False})
-
-    def testCreate(self):
-        succeed = ('testbox', 'test/box', 'test/', 'test/box/box', 'INBOX')
-        fail = ('testbox', 'test/box')
-
-        def cb():
-            self.result.append(1)
-
-        def eb(failure):
-            self.result.append(0)
-
-        def login():
-            return self.client.login('testuser', 'password-test')
-
-        def create():
-            for name in succeed + fail:
-                d = self.client.create(name)
-                d.addCallback(strip(cb)).addErrback(eb)
-            d.addCallbacks(self._cbStopClient, self._ebGeneral)
-
-        self.result = []
-        d1 = self.connected.addCallback(strip(login)).addCallback(
-            strip(create))
-        d2 = self.loopback()
-        d = defer.gatherResults([d1, d2])
-        return d.addCallback(self._cbTestCreate, succeed, fail)
-
-    def _cbTestCreate(self, ignored, succeed, fail):
-        self.assertEqual(self.result, [1] * len(succeed) + [0] * len(fail))
-        mbox = SimpleLEAPServer.theAccount.mailboxes.keys()
-        answers = ['inbox', 'testbox', 'test/box', 'test', 'test/box/box']
-        mbox.sort()
-        answers.sort()
-        self.assertEqual(mbox, [a.upper() for a in answers])
-
-    def testDelete(self):
-        SimpleLEAPServer.theAccount.addMailbox('delete/me')
-
-        def login():
-            return self.client.login('testuser', 'password-test')
-
-        def delete():
-            return self.client.delete('delete/me')
-
-        d1 = self.connected.addCallback(strip(login))
-        d1.addCallbacks(strip(delete), self._ebGeneral)
-        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
-        d2 = self.loopback()
-        d = defer.gatherResults([d1, d2])
-        d.addCallback(lambda _:
-                      self.assertEqual(SimpleLEAPServer.theAccount.mailboxes.keys(), []))
-        return d
-
-    def testIllegalInboxDelete(self):
-        self.stashed = None
-
-        def login():
-            return self.client.login('testuser', 'password-test')
-
-        def delete():
-            return self.client.delete('inbox')
-
-        def stash(result):
-            self.stashed = result
-
-        d1 = self.connected.addCallback(strip(login))
-        d1.addCallbacks(strip(delete), self._ebGeneral)
-        d1.addBoth(stash)
-        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
-        d2 = self.loopback()
-        d = defer.gatherResults([d1, d2])
-        d.addCallback(lambda _: self.failUnless(isinstance(self.stashed,
-                                                           failure.Failure)))
-        return d
-
-    def testNonExistentDelete(self):
-
-        def login():
-            return self.client.login('testuser', 'password-test')
-
-        def delete():
-            return self.client.delete('delete/me')
-
-        def deleteFailed(failure):
-            self.failure = failure
-
-        self.failure = None
-        d1 = self.connected.addCallback(strip(login))
-        d1.addCallback(strip(delete)).addErrback(deleteFailed)
-        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
-        d2 = self.loopback()
-        d = defer.gatherResults([d1, d2])
-        d.addCallback(lambda _: self.assertEqual(str(self.failure.value),
-                                                  'No such mailbox'))
-        return d
-
-    def testIllegalDelete(self):
-        m = SoledadMailbox()
-        m.flags = (r'\Noselect',)
-        SimpleLEAPServer.theAccount.addMailbox('delete', m)
-        SimpleLEAPServer.theAccount.addMailbox('delete/me')
-
-        def login():
-            return self.client.login('testuser', 'password-test')
-
-        def delete():
-            return self.client.delete('delete')
-
-        def deleteFailed(failure):
-            self.failure = failure
-
-        self.failure = None
-        d1 = self.connected.addCallback(strip(login))
-        d1.addCallback(strip(delete)).addErrback(deleteFailed)
-        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
-        d2 = self.loopback()
-        d = defer.gatherResults([d1, d2])
-        expected = ("Hierarchically inferior mailboxes exist "
-                    "and \\Noselect is set")
-        d.addCallback(lambda _:
-                      self.assertEqual(str(self.failure.value), expected))
-        return d
-
-    def testRename(self):
-        SimpleLEAPServer.theAccount.addMailbox('oldmbox')
-
-        def login():
-            return self.client.login('testuser', 'password-test')
-
-        def rename():
-            return self.client.rename('oldmbox', 'newname')
-
-        d1 = self.connected.addCallback(strip(login))
-        d1.addCallbacks(strip(rename), self._ebGeneral)
-        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
-        d2 = self.loopback()
-        d = defer.gatherResults([d1, d2])
-        d.addCallback(lambda _:
-                      self.assertEqual(
-                        SimpleLEAPServer.theAccount.mailboxes.keys(),
-                        ['NEWNAME']))
-        return d
-
-    def testIllegalInboxRename(self):
-        self.stashed = None
-
-        def login():
-            return self.client.login('testuser', 'password-test')
-
-        def rename():
-            return self.client.rename('inbox', 'frotz')
-
-        def stash(stuff):
-            self.stashed = stuff
-
-        d1 = self.connected.addCallback(strip(login))
-        d1.addCallbacks(strip(rename), self._ebGeneral)
-        d1.addBoth(stash)
-        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
-        d2 = self.loopback()
-        d = defer.gatherResults([d1, d2])
-        d.addCallback(lambda _:
-                      self.failUnless(isinstance(
-                        self.stashed, failure.Failure)))
-        return d
-
-    def testHierarchicalRename(self):
-        SimpleLEAPServer.theAccount.create('oldmbox/m1')
-        SimpleLEAPServer.theAccount.create('oldmbox/m2')
-
-        def login():
-            return self.client.login('testuser', 'password-test')
-
-        def rename():
-            return self.client.rename('oldmbox', 'newname')
-
-        d1 = self.connected.addCallback(strip(login))
-        d1.addCallbacks(strip(rename), self._ebGeneral)
-        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
-        d2 = self.loopback()
-        d = defer.gatherResults([d1, d2])
-        return d.addCallback(self._cbTestHierarchicalRename)
-
-    def _cbTestHierarchicalRename(self, ignored):
-        mboxes = SimpleLEAPServer.theAccount.mailboxes.keys()
-        expected = ['newname', 'newname/m1', 'newname/m2']
-        mboxes.sort()
-        self.assertEqual(mboxes, [s.upper() for s in expected])
-
-    def testSubscribe(self):
-
-        def login():
-            return self.client.login('testuser', 'password-test')
-
-        def subscribe():
-            return self.client.subscribe('this/mbox')
-
-        d1 = self.connected.addCallback(strip(login))
-        d1.addCallbacks(strip(subscribe), self._ebGeneral)
-        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
-        d2 = self.loopback()
-        d = defer.gatherResults([d1, d2])
-        d.addCallback(lambda _:
-                      self.assertEqual(SimpleLEAPServer.theAccount.subscriptions,
-                                        ['THIS/MBOX']))
-        return d
-
-    def testUnsubscribe(self):
-        SimpleLEAPServer.theAccount.subscriptions = ['THIS/MBOX', 'THAT/MBOX']
-        def login():
-            return self.client.login('testuser', 'password-test')
-        def unsubscribe():
-            return self.client.unsubscribe('this/mbox')
-
-        d1 = self.connected.addCallback(strip(login))
-        d1.addCallbacks(strip(unsubscribe), self._ebGeneral)
-        d1.addCallbacks(self._cbStopClient, self._ebGeneral)
-        d2 = self.loopback()
-        d = defer.gatherResults([d1, d2])
-        d.addCallback(lambda _:
-                      self.assertEqual(SimpleLEAPServer.theAccount.subscriptions,
-                                        ['THAT/MBOX']))
-        return d
 
     def _listSetup(self, f):
         SimpleLEAPServer.theAccount.addMailbox('root/subthing')
@@ -820,7 +922,8 @@ class IMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         mb = SimpleLEAPServer.theAccount.mailboxes['ROOT/SUBTHING']
         self.assertEqual(1, len(mb.messages))
         self.assertEqual(
-            (['\\SEEN', '\\DELETED'], 'Tue, 17 Jun 2003 11:22:16 -0600 (MDT)', 0),
+            (['\\SEEN', '\\DELETED'],
+             'Tue, 17 Jun 2003 11:22:16 -0600 (MDT)', 0),
             mb.messages[0][1:]
         )
         self.assertEqual(open(infile).read(), mb.messages[0][0].getvalue())
@@ -838,7 +941,8 @@ class IMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
             return self.client.sendCommand(
                 imap4.Command(
                     'APPEND',
-                    'PARTIAL/SUBTHING (\\SEEN) "Right now" {%d}' % os.path.getsize(infile),
+                    'PARTIAL/SUBTHING (\\SEEN) "Right now" '
+                    '{%d}' % os.path.getsize(infile),
                     (), self.client._IMAP4Client__cbContinueAppend, message
                 )
             )
@@ -905,7 +1009,8 @@ class IMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
 
     def _cbTestClose(self, ignored, m):
         self.assertEqual(len(m.messages), 1)
-        self.assertEqual(m.messages[0],
+        self.assertEqual(
+            m.messages[0],
             ('Message 2', ('AnotherFlag',), None, 1))
         self.failUnless(m.closed)
 
@@ -943,11 +1048,11 @@ class IMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
 
     def _cbTestExpunge(self, ignored, m):
         self.assertEqual(len(m.messages), 1)
-        self.assertEqual(m.messages[0],
+        self.assertEqual(
+            m.messages[0],
             ('Message 2', ('AnotherFlag',), None, 1))
 
         self.assertEqual(self.results, [0, 2])
-
 
 
 class IMAP4ServerSearchTestCase(IMAP4HelperMixin, unittest.TestCase):

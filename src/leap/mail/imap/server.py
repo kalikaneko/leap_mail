@@ -1,3 +1,22 @@
+# -*- coding: utf-8 -*-
+# server.py
+# Copyright (C) 2013 LEAP
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+"""
+Soledad-backed IMAP Server.
+"""
 import copy
 
 from zope.interface import implements
@@ -9,84 +28,7 @@ from twisted.internet import defer
 
 import u1db
 
-
-# TODO delete this SimpleMailbox
-class SimpleMailbox:
-    """
-    A simple Mailbox for reference
-    We don't intend to use this, only for debugging purposes
-    until we stabilize unittests with SoledadMailbox
-    """
-    implements(imap4.IMailboxInfo, imap4.IMailbox, imap4.ICloseableMailbox)
-
-    flags = ('\\Flag1', 'Flag2', '\\AnotherSysFlag', 'LastFlag')
-    messages = []
-    mUID = 0
-    rw = 1
-    closed = False
-
-    def __init__(self):
-        self.listeners = []
-        self.addListener = self.listeners.append
-        self.removeListener = self.listeners.remove
-
-    def getFlags(self):
-        return self.flags
-
-    def getUIDValidity(self):
-        return 42
-
-    def getUIDNext(self):
-        return len(self.messages) + 1
-
-    def getMessageCount(self):
-        return 9
-
-    def getRecentCount(self):
-        return 3
-
-    def getUnseenCount(self):
-        return 4
-
-    def isWriteable(self):
-        return self.rw
-
-    def destroy(self):
-        pass
-
-    def getHierarchicalDelimiter(self):
-        return '/'
-
-    def requestStatus(self, names):
-        r = {}
-        if 'MESSAGES' in names:
-            r['MESSAGES'] = self.getMessageCount()
-        if 'RECENT' in names:
-            r['RECENT'] = self.getRecentCount()
-        if 'UIDNEXT' in names:
-            r['UIDNEXT'] = self.getMessageCount() + 1
-        if 'UIDVALIDITY' in names:
-            r['UIDVALIDITY'] = self.getUID()
-        if 'UNSEEN' in names:
-            r['UNSEEN'] = self.getUnseenCount()
-        return defer.succeed(r)
-
-    def addMessage(self, message, flags, date=None):
-        self.messages.append((message, flags, date, self.mUID))
-        self.mUID += 1
-        return defer.succeed(None)
-
-    def expunge(self):
-        delete = []
-        for i in self.messages:
-            if '\\Deleted' in i[1]:
-                delete.append(i)
-        for i in delete:
-            self.messages.remove(i)
-        return [i[3] for i in delete]
-
-    def close(self):
-        self.closed = True
+from leap.common.check import leap_assert
 
 
 ###################################
@@ -113,6 +55,13 @@ class SoledadAccountIndex(object):
     _index = None
 
     def __init__(self, soledad=None):
+        """
+        Constructor for the SoledadAccountIndex.
+        Needs a soledad intance to be initialized
+        """
+        leap_assert(soledad, "Need a soledad instance to initialize")
+        # XXX instance check
+
         self._soledad = soledad
         self._db = soledad._db
         self._initialize_db()
@@ -202,29 +151,50 @@ class SoledadAccountIndex(object):
 #######################################
 
 class SoledadBackedAccount(object):
+    """
+    An implementation of IAccount and INamespacePresenteer
+    that is backed by Soledad Encrypted Documents.
+    """
 
     implements(imap4.IAccount, imap4.INamespacePresenter)
 
+    # XXX ----------------
+    # REMOVE -------------
     #mailboxes = None
     #subscriptions = None
+    # --------------------
 
-    top_id = 0  # XXX move top_id to _index
+    #top_id = 0  # XXX move top_id to _index
     _soledad = None
     _db = None
 
     def __init__(self, name, soledad=None):
+        """
+        SoledadBackedAccount constructor
+        Creates a SoledadAccountIndex that keeps track of the
+        mailboxes and subscriptions handled by this account.
+        """
+        leap_assert(soledad, "Need a soledad instance to initialize")
+        # XXX check isinstance ...
+
         self.name = name
         self._soledad = soledad
+
+        # XXX soledad HAS NOT _db now... ???
+
         self._db = soledad._db
         self._index = SoledadAccountIndex(soledad=soledad)
 
-        #self.mailboxes = {}
-        #self.subscriptions = []
-
-    def allocateID(self):
-        id = self.top_id  # XXX move to index !!!
-        self.top_id += 1
-        return id
+    # XXX - this was allocating sequential IDs for the mailbox,
+    # but since we're storing that in soledad index doc
+    # we can get the document ID from there, no need for
+    # an ID anymore.
+    #def allocateID(self):
+        #"""
+        #"""
+        #id = self.top_id
+        #self.top_id += 1
+        #return id
 
     @property
     def mailboxes(self):
@@ -242,8 +212,8 @@ class SoledadBackedAccount(object):
         name = name.upper()
         if name in self.mailboxes:
             raise imap4.MailboxCollision, name
-        if mbox is None:
-            mbox = self._emptyMailbox(name, self.allocateID())
+        #if mbox is None:
+        #mbox = self._emptyMailbox(name, self.allocateID())
         self._index.addMailbox(name)
         return 1
 
@@ -262,10 +232,24 @@ class SoledadBackedAccount(object):
         return True
 
     def _emptyMailbox(self, name, id):
+        """
+        Returns an empty mailbox which has been initialized
+        with the given id
+
+        @param name: name of the mailbox
+        @param id: id of the mailbox
+        """
+        # ---------------------------------
         # XXX implement!!!
+        # ---------------------------------
         raise NotImplementedError
 
     def select(self, name, readwrite=1):
+        """
+        Select a mailbox.
+        @param name: the mailbox to select
+        @param readwrite: 1 for readwrite permissions.
+        """
         return self.mailboxes.get(name.upper())
 
     def delete(self, name):
@@ -285,7 +269,7 @@ class SoledadBackedAccount(object):
                         "exist and \\Noselect is set")
         mbox.destroy()
 
-        # iff there are no hierarchically inferior names, we will
+        # if there are no hierarchically inferior names, we will
         # delete it from our ken.
         if self._inferiorNames(name) > 1:
             del self.mailboxes[name]
@@ -329,9 +313,23 @@ class SoledadBackedAccount(object):
         self._index.removeSubscription(name)
 
     def listMailboxes(self, ref, wildcard):
+        """
+        List the mailboxes.
+        """
         ref = self._inferiorNames(ref.upper())
         wildcard = imap4.wildcardToRegexp(wildcard, '/')
         return [(i, self.mailboxes[i]) for i in ref if wildcard.match(i)]
+
+    def deleteAllMessages(self, iknowhatiamdoing=False):
+        """
+        Deletes all messages from all mailboxes.
+        Danger! high voltage!
+
+        @param iamfuckingsure: confirmation parameter.
+        """
+        if iknowhatiamdoing:
+            for mbox in self.listMailboxes():
+                self.delete(mbox)
 
     ##
     ## INamespacePresenter
@@ -353,8 +351,9 @@ class SoledadBackedAccount(object):
 
 FLAGS_INDEX = 'flags'
 SEEN_INDEX = 'seen'
-INDEXES = {FLAGS_INDEX: ['flags'],
-           SEEN_INDEX: ['bool(seen)'],
+INDEXES = {
+    FLAGS_INDEX: ['flags'],
+    SEEN_INDEX: ['bool(seen)'],
 }
 
 
@@ -477,8 +476,14 @@ class SoledadMailbox:
     closed = False
 
     def __init__(self, mbox, soledad=None):
+        """
+        SoledadMailbox constructor
+        @param mbox: the mailbox to create
+        @param soledad: a Soledad instance.
+        """
         # XXX sanity check:
-        #soledad is not None and isinstance(SQLCipherDatabase, soldad._db)
+        #soledad is not None and isinstance(SQLCipherDatabase, soledad._db)
+
         self.listeners = []
         self.addListener = self.listeners.append
         self.removeListener = self.listeners.remove
