@@ -1,6 +1,6 @@
 leap.mail
 =========
-Mail services for the LEAP CLient.
+Mail services for the LEAP Client.
 
 More info: https://leap.se
 

@@ -18,6 +18,7 @@
 Soledad-backed IMAP Server.
 """
 import copy
+import logging
 
 from zope.interface import implements
 
@@ -29,6 +30,9 @@ from twisted.internet import defer
 import u1db
 
 from leap.common.check import leap_assert
+from leap.soledad.backends.sqlcipher import SQLCipherDatabase
+
+logger = logging.getLogger(__name__)
 
 
 ###################################
@@ -43,11 +47,37 @@ class BadIndexError(Exception):
     """raises when index is malformed or has the wrong cardinality"""
 
 
-EMPTY_INDEXDOC = {"is_index": True, "mailboxes": [], "subscriptions": []}
+EMPTY_INDEXDOC = {
+    "is_index": True,
+    "mailboxes": [],
+    "subscriptions": [],
+    "flags": {}}
 get_empty_indexdoc = lambda: copy.deepcopy(EMPTY_INDEXDOC)
 
 
-class SoledadAccountIndex(object):
+class IndexedDB(object):
+
+    def _create_index_doc(self):
+        """creates an empty index document"""
+        indexdoc = get_empty_indexdoc()
+        self._index = self._soledad.create_doc(
+            indexdoc)
+
+    def _get_index_doc(self):
+        """gets index document"""
+        indexdoc = self._db.get_from_index("isindex", "*")
+        if not indexdoc:
+            raise MissingIndexError
+        if len(indexdoc) > 1:
+            raise BadIndexError
+        return indexdoc[0]
+
+    def _update_index_doc(self):
+        """updates index document"""
+        self._db.put_doc(self._index)
+
+
+class SoledadAccountIndex(IndexedDB):
     """
     Index for the Soledad Account
     keeps track of mailboxes and subscriptions
@@ -77,25 +107,6 @@ class SoledadAccountIndex(object):
         except MissingIndexError:
             print "no index!!! creating..."
             self._create_index_doc()
-
-    def _create_index_doc(self):
-        """creates an empty index document"""
-        indexdoc = get_empty_indexdoc()
-        self._index = self._soledad.create_doc(
-            indexdoc)
-
-    def _get_index_doc(self):
-        """gets index document"""
-        indexdoc = self._db.get_from_index("isindex", "*")
-        if not indexdoc:
-            raise MissingIndexError
-        if len(indexdoc) > 1:
-            raise BadIndexError
-        return indexdoc[0]
-
-    def _update_index_doc(self):
-        """updates index document"""
-        self._db.put_doc(self._index)
 
     # setters and getters for the index document
 
@@ -141,9 +152,27 @@ class SoledadAccountIndex(object):
         self._update_index_doc()
 
     def removeSubscription(self, name):
-        """remove a subscription from the subscriptions list."""
+        """
+        Remove a subscription from the subscriptions list.
+        """
         self.subscriptions.remove(name)
         self._update_index_doc()
+
+    #
+    # flags
+    #
+
+    def _get_flags(self):
+        """Get flags from index for the account."""
+        return self._index.content.setdefault('flags', {})
+
+    def _set_flags(self, flags):
+        """Set flags dict in the index for the account."""
+        self._index.content['flags'] = flags
+        self._update_index_doc()
+
+    _flags = property(
+        _get_flags, _set_flags, doc="Mailboxes flags.")
 
 
 #######################################
@@ -158,32 +187,32 @@ class SoledadBackedAccount(object):
 
     implements(imap4.IAccount, imap4.INamespacePresenter)
 
-    # XXX ----------------
-    # REMOVE -------------
-    #mailboxes = None
-    #subscriptions = None
-    # --------------------
-
     #top_id = 0  # XXX move top_id to _index
+
     _soledad = None
     _db = None
+
+    selected = None
 
     def __init__(self, name, soledad=None):
         """
         SoledadBackedAccount constructor
-        Creates a SoledadAccountIndex that keeps track of the
+        creates a SoledadAccountIndex that keeps track of the
         mailboxes and subscriptions handled by this account.
+
+        @param name: the name of the account (user id)
+        @param soledad: a Soledad instance
         """
         leap_assert(soledad, "Need a soledad instance to initialize")
         # XXX check isinstance ...
+        # XXX SHOULD assert too that the name matches the user with which
+        # soledad has been initialized.
 
-        self.name = name
+        self.name = name.upper()
+        self._index = SoledadAccountIndex(soledad=soledad)
         self._soledad = soledad
 
-        # XXX soledad HAS NOT _db now... ???
-
         self._db = soledad._db
-        self._index = SoledadAccountIndex(soledad=soledad)
 
     # XXX - this was allocating sequential IDs for the mailbox,
     # but since we're storing that in soledad index doc
@@ -204,20 +233,47 @@ class SoledadBackedAccount(object):
     def subscriptions(self):
         return self._index.subscriptions
 
+    def getMailbox(self, name):
+        """
+        Returns Mailbox with that name, without selecting it.
+        @param: name
+        """
+        name = name.upper()
+        return SoledadMailbox(name, soledad=self._soledad,
+                              index=self._index)
+
     ##
     ## IAccount
     ##
 
-    def addMailbox(self, name, mbox=None):
+    def addMailbox(self, name):
+        """
+        Adds a mailbox to the account
+
+        @param name: the name of the mailbox
+        @type name: str
+        @rtype: bool
+        """
         name = name.upper()
         if name in self.mailboxes:
             raise imap4.MailboxCollision, name
         #if mbox is None:
         #mbox = self._emptyMailbox(name, self.allocateID())
         self._index.addMailbox(name)
-        return 1
+        return True
 
     def create(self, pathspec):
+        # XXX What _exactly_ is the difference with addMailbox?
+        # We accept here a path specification, which can contain
+        # many levels, but look for the appropriate documentation
+        # pointer.
+        """
+        Create a mailbox
+        Return True if successfully created
+
+        @param pathspec: XXX ??? -----------------
+        @rtype: bool
+        """
         paths = filter(None, pathspec.split('/'))
         for accum in range(1, len(paths)):
             try:
@@ -231,50 +287,59 @@ class SoledadBackedAccount(object):
                 return False
         return True
 
-    def _emptyMailbox(self, name, id):
-        """
-        Returns an empty mailbox which has been initialized
-        with the given id
-
-        @param name: name of the mailbox
-        @param id: id of the mailbox
-        """
-        # ---------------------------------
-        # XXX implement!!!
-        # ---------------------------------
-        raise NotImplementedError
-
     def select(self, name, readwrite=1):
         """
         Select a mailbox.
         @param name: the mailbox to select
         @param readwrite: 1 for readwrite permissions.
+        @rtype: bool
         """
-        return self.mailboxes.get(name.upper())
+        self.selected = name
+        return SoledadMailbox(name, rw=readwrite, soledad=self._soledad,
+                              index=self._index)
 
-    def delete(self, name):
+    def delete(self, name, force=False):
+        """
+        Deletes a mailbox.
+        Right now it does not purge the messages, but just removes the mailbox
+        name from the mailboxes list!!!
+
+        @param name: the mailbox to be deleted
+        """
         name = name.upper()
-        # See if this mailbox exists at all
-        mbox = self.mailboxes.get(name)
-        if not mbox:
+        if not name in self.mailboxes:
             raise imap4.MailboxException("No such mailbox")
-        # See if this box is flagged \Noselect
-        if r'\Noselect' in mbox.getFlags():
-            # Check for hierarchically inferior mailboxes with this one
-            # as part of their root.
-            for others in self.mailboxes.keys():
-                if others != name and others.startswith(name):
-                    raise imap4.MailboxException, (
-                        "Hierarchically inferior mailboxes "
-                        "exist and \\Noselect is set")
+
+        #self._index.removeMailbox(name)
+
+        mbox = self.getMailbox(name)
+
+        #import ipdb; ipdb.set_trace()
+
+        if force is False:
+            # See if this box is flagged \Noselect
+            if r'\Noselect' in mbox.getFlags():
+                # Check for hierarchically inferior mailboxes with this one
+                # as part of their root.
+                for others in self.mailboxes:
+                    if others != name and others.startswith(name):
+                        raise imap4.MailboxException, (
+                            "Hierarchically inferior mailboxes "
+                            "exist and \\Noselect is set")
         mbox.destroy()
 
         # if there are no hierarchically inferior names, we will
         # delete it from our ken.
         if self._inferiorNames(name) > 1:
-            del self.mailboxes[name]
+            #del self.mailboxes[name]
+            self._index.removeMailbox(name)
 
     def rename(self, oldname, newname):
+        """
+        Renames a mailbox
+        @param oldname: old name of the mailbox
+        @param newname: new name of the mailbox
+        """
         oldname = oldname.upper()
         newname = newname.upper()
         if oldname not in self.mailboxes:
@@ -288,25 +353,50 @@ class SoledadBackedAccount(object):
                 raise imap4.MailboxCollision, new
 
         for (old, new) in inferiors:
-            self.mailboxes[new] = self.mailboxes[old]
-            del self.mailboxes[old]
+            self.mailboxes[self.mailboxes.index(old)] = new
+
+        # XXX ---- FIXME!!!! ------------------------------------
+        # until here we just renamed the index...
+        # We have to rename also the occurrence of this
+        # mailbox on ALL the messages that are contained in it!!!
+        # -------------------------------------------------------
 
     def _inferiorNames(self, name):
+        """
+        Return hierarchically inferior mailboxes
+        @param name: the mailbox
+        @rtype: list
+        """
         inferiors = []
-        for infname in self.mailboxes.keys():
+        for infname in self.mailboxes:
             if infname.startswith(name):
                 inferiors.append(infname)
         return inferiors
 
     def isSubscribed(self, name):
+        """
+        Returns True if user is subscribed to this mailbox.
+        @param name: the mailbox to be checked.
+        @rtype: bool
+        """
         return name.upper() in self.subscriptions
 
     def subscribe(self, name):
+        """
+        Subscribe to this mailbox
+        @param name: the mailbox
+        @type name: str
+        """
         name = name.upper()
         if name not in self.subscriptions:
             self._index.addSubscription(name)
 
     def unsubscribe(self, name):
+        """
+        Unsubscribe from this mailbox
+        @param name: the mailbox
+        @type name: str
+        """
         name = name.upper()
         if name not in self.subscriptions:
             raise imap4.MailboxException, "Not currently subscribed to " + name
@@ -315,7 +405,10 @@ class SoledadBackedAccount(object):
     def listMailboxes(self, ref, wildcard):
         """
         List the mailboxes.
+        @param ref: XXX ---------------
+        @param wildcard: XXX ----------
         """
+        # XXX fill docstring ----------
         ref = self._inferiorNames(ref.upper())
         wildcard = imap4.wildcardToRegexp(wildcard, '/')
         return [(i, self.mailboxes[i]) for i in ref if wildcard.match(i)]
@@ -325,11 +418,12 @@ class SoledadBackedAccount(object):
         Deletes all messages from all mailboxes.
         Danger! high voltage!
 
-        @param iamfuckingsure: confirmation parameter.
+        @param iknowhatiamdoing: confirmation parameter, needs to be True
+            to proceed.
         """
-        if iknowhatiamdoing:
-            for mbox in self.listMailboxes():
-                self.delete(mbox)
+        if iknowhatiamdoing is True:
+            for mbox in self.mailboxes:
+                self.delete(mbox, force=True)
 
     ##
     ## INamespacePresenter
@@ -349,15 +443,9 @@ class SoledadBackedAccount(object):
 # and Mailbox
 #######################################
 
-FLAGS_INDEX = 'flags'
-SEEN_INDEX = 'seen'
-INDEXES = {
-    FLAGS_INDEX: ['flags'],
-    SEEN_INDEX: ['bool(seen)'],
-}
-
 
 class Message(u1db.Document):
+
     """A rfc822 message item."""
     # XXX TODO use email module
 
@@ -392,31 +480,67 @@ class Message(u1db.Document):
 
     flags = property(_get_flags, _set_flags, doc="Message flags.")
 
-EMPTY_MSG = {
-    "subject": "",
-    "seen": False,
-    "flags": [],
-    "mailbox": "",
-}
-get_empty_msg = lambda: copy.deepcopy(EMPTY_MSG)
-
 
 class MessageCollection(object):
     """
-    A collection of messages
+    A collection of messages, surprisingly.
+
+    It is tied to a selected mailbox name that is passed to constructor.
+    Implements a filter query over the messages contained in a soledad
+    database, and deals with the initialization of the soledad database.
     """
+    SEEN_INDEX = 'seen'
+    FLAGS_INDEX = 'flags'
+    MAILBOX_INDEX = 'mailbox'
+
+    INDEXES = {
+        FLAGS_INDEX: ['flags'],
+        SEEN_INDEX: ['bool(seen)'],
+        MAILBOX_INDEX: ['mailbox']
+        # XXX Can we add some magic
+        # for making more complex queries
+        # when selecting by mailbox / flags?
+    }
+
+    EMPTY_MSG = {
+        "subject": "",
+        "seen": False,
+        "flags": [],
+        "mailbox": "inbox",
+    }
 
     def __init__(self, mbox=None, db=None):
-        assert mbox
+        """
+        Constructor for MessageCollection
+
+        @param mbox: the name of the mailbox. It is the name
+                     with which we filter the query over the
+                     messages database
+        @type mbox: str
+        @param db: SQLCipher database (contained in soledad)
+        @type db: SQLCipher instance
+        """
+        leap_assert(mbox, "Need a mailbox name to initialize")
+        leap_assert(mbox.strip() != "", "mbox cannot be blank space")
+        leap_assert(isinstance(mbox, str), "mbox needs to be a string")
+        leap_assert(db, "Need a db instance to initialize")
+        leap_assert(isinstance(db, SQLCipherDatabase),
+                    "db must be an instance of SQLCipherDatabase")
+
+        # okay, all in order, keep going...
+
+        self.mbox = mbox.upper()
         self.db = db
         self.initialize_db()
 
     def initialize_db(self):
-        """Initialize the database."""
+        """
+        Initialize the database.
+        """
         # Ask the database for currently existing indexes.
         db_indexes = dict(self.db.list_indexes())
         # Loop through the indexes we expect to find.
-        for name, expression in INDEXES.items():
+        for name, expression in self.INDEXES.items():
             print 'name is', name
             if name not in db_indexes:
                 # The index does not yet exist.
@@ -434,11 +558,30 @@ class MessageCollection(object):
             self.db.delete_index(name)
             self.db.create_index(name, *expression)
 
+            # XXX create index by MAILBOX -------------
+            # FIXME -----------------------------------
+
+    def get_empty_msg(self):
+        """
+        Return an empty message
+        @rtype: dict
+        """
+        return copy.deepcopy(self.EMPTY_MSG)
+
     def add_msg(self, subject=None, flags=None):
-        """Create a new message document."""
+        # XXX add raw message here
+        """
+        Create a new message document.
+        @param mbox: name of the mbox to place this message in.
+        @param subject: subject of the message.
+        @param flags: flags
+        """
         if flags is None:
             flags = []
-        content = get_empty_msg()
+
+        content = self.get_empty_msg()
+        content['mailbox'] = self.mbox
+
         if subject or flags:
             content['subject'] = subject
             content['flags'] = flags
@@ -448,52 +591,115 @@ class MessageCollection(object):
         return self.db.create_doc(content)
 
     def get_all(self):
-        """Get all messages"""
-        return self.db.get_from_index(SEEN_INDEX, "*")
+        """
+        Get all messages for the selected mailbox
 
-    def get_unseen(self):
-        """Get only unseen messages"""
-        return self.db.get_from_index(SEEN_INDEX, "0")
+        @rtype: list
+        """
+        # XXX FILTER BY MAILBOX!!!
+        #return self.db.get_from_index(self.SEEN_INDEX, "*")
+        return self.db.get_from_index(self.MAILBOX_INDEX, self.mbox)
+
+    def unseen_iter(self):
+        """
+        Get only unseen messages for the selected mailbox
+
+        @rtype: iter
+        """
+        # we should be able to join the query-by-mailbox
+        # and query-by-flag...
+        # make list comprenhension by now ...
+        #return self.db.get_from_index(self.SEEN_INDEX, "0")
+        return (doc for doc in self.get_all()
+                if doc.content['seen'] is False)
 
     def count(self):
+        """
+        Return the count of messages
+        """
         return len(self.get_all())
 
 
-class SoledadMailbox:
+class SoledadMailbox(object):
     """
-    A Soledad-backed IMAP mailbox
-    """
+    A Soledad-backed IMAP mailbox.
 
+    Implements the high-level method needed for the Mailbox interfaces.
+    The low-level database methods are contained in MessageCollection class,
+    which we instantiate and make accessible in the `messages` attribute.
+    """
     implements(imap4.IMailboxInfo, imap4.IMailbox, imap4.ICloseableMailbox)
 
-    flags = ('\\Seen', '\\Answered', '\\Flagged',
-             '\\Deleted', '\\Draft', '\\Recent', 'List')
-
-    #messages = []
     messages = None
-    mUID = 0
-    rw = 1
     closed = False
 
-    def __init__(self, mbox, soledad=None):
+    INIT_FLAGS = ('\\Seen', '\\Answered', '\\Flagged',
+                  '\\Deleted', '\\Draft', '\\Recent', 'List')
+    flags = None
+
+    def __init__(self, mbox, soledad=None, rw=1, index=None):
         """
         SoledadMailbox constructor
-        @param mbox: the mailbox to create
+        @param mbox: the mailbox name
         @param soledad: a Soledad instance.
+        @param rw: read-and-write flags
+        @type rw: bool
         """
-        # XXX sanity check:
-        #soledad is not None and isinstance(SQLCipherDatabase, soledad._db)
+        leap_assert(mbox, "Need a mailbox name to initialize")
+        leap_assert(soledad, "Need a soledad instance to initialize")
+        leap_assert(isinstance(soledad._db, SQLCipherDatabase),
+                    "soledad._db must be an instance of SQLCipherDatabase")
 
-        self.listeners = []
-        self.addListener = self.listeners.append
-        self.removeListener = self.listeners.remove
+        self.mbox = mbox
+        self.rw = rw
+
         self._soledad = soledad
-        if soledad:
-            self.messages = MessageCollection(
-                mbox=mbox, db=soledad._db)
+        self._db = soledad._db
+        self._index = index
+
+        self.messages = MessageCollection(
+            mbox=mbox, db=soledad._db)
+
+        if not self.getFlags():
+            self.setFlags(self.INIT_FLAGS)
+
+        # XXX what is/was this used for??? --------
+        # probably should implement
+        # using leap.common.events
+        #self.listeners = []
+        #self.addListener = self.listeners.append
+        #self.removeListener = self.listeners.remove
+        #------------------------------------------
 
     def getFlags(self):
-        return self.messages.db.get_index_keys(FLAGS_INDEX)
+        """
+        Returns the possible flags of this mailbox
+        @rtype: tuple
+        """
+        if self._index:
+            return self._index._flags.get(self.mbox, None)
+        else:
+            logger.debug('mailbox without access to the index')
+            return self.flags or self.INIT_FLAGS
+
+    def setFlags(self, flags):
+        """
+        Sets flags for this mailbox
+        @param flags: a tuple with the flags
+        """
+        leap_assert(isinstance(flags, tuple),
+                    "flags expected to be a tuple")
+        #import ipdb; ipdb.set_trace()
+
+        if self._index:
+            self._index._flags[self.mbox] = flags
+            self._index._update_index_doc()
+        else:
+            #logger.debug('mailbox without access to the index')
+            print 'NO INDEX'
+            self.flags = flags
+
+    # XXX FIXME --------------- IMPLEMENT THIS ------------
 
     def getUIDValidity(self):
         return 42
@@ -511,11 +717,14 @@ class SoledadMailbox:
         # XXX
         return 3
 
-    def isWriteable(self):
-        return self.rw
+    # XXX ----------------------  ^^^ -----------------------
 
-    def destroy(self):
-        pass
+    def isWriteable(self):
+        """
+        Returns True if this mailbox is writable
+        @rtype: int
+        """
+        return self.rw
 
     def getHierarchicalDelimiter(self):
         return '/'
@@ -537,14 +746,18 @@ class SoledadMailbox:
     def addMessage(self, message, flags, date=None):
         # self.messages.add_msg((msg, flags, date, self.mUID))
         #self.messages.append((message, flags, date, self.mUID))
-        # XXX CHANGE-ME
         self.messages.add_msg(subject=message, flags=flags, date=date)
-        self.mUID += 1
         return defer.succeed(None)
 
+    def destroy(self):
+        # XXX should remove also the mailbox from index
+        self.deleteAllDocs()
+
     def deleteAllDocs(self):
-        """deletes all docs"""
-        docs = self.messages.db.get_all_docs()[1]
+        """
+        Deletes all docs in this mailbox
+        """
+        docs = self.messages.get_all()
         for doc in docs:
             self.messages.db.delete_doc(doc)
 
