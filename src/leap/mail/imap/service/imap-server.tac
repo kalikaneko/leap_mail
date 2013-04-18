@@ -28,6 +28,13 @@ class LeapIMAPServer(imap4.IMAP4Server):
         imap4.IMAP4Server.__init__(self, *args, **kwargs)
         theAccount = SoledadBackedAccount(
             user, soledad=soledad)
+
+        # ---------------------------------
+        # XXX pre-populate acct for tests!!
+        populate_test_account(theAccount)
+        # ---------------------------------
+	# import ipdb; ipdb.set_trace()
+
         self.theAccount = theAccount
 
     def lineReceived(self, line):
@@ -35,7 +42,7 @@ class LeapIMAPServer(imap4.IMAP4Server):
         imap4.IMAP4Server.lineReceived(self, line)
 
     def authenticateLogin(self, username, password):
-        # all is allowed so far
+        # all is allowed so far. use realm instead
         return imap4.IAccount, self.theAccount, lambda: None
 
 
@@ -104,6 +111,23 @@ def initialize_soledad(email, gnupg_home, tempdir):
     _soledad._init_db()
 
     return _soledad
+
+
+mail_sample = open('rfc822.message').read()
+
+
+def populate_test_account(acct):
+    """
+    Populates inbox for testing purposes
+    """
+    inbox = acct.getMailbox('inbox')
+    inbox.addMessage(mail_sample, ("\\Foo", "\\Recent",), date="Right now2")
+    inbox.addMessage("test2", ("\\Foo", "\\Recent", ), date="Right now3")
+    inbox.addMessage("test3", ("\\Foo", "\\Recent", ), date="Right now3")
+
+    #inbox.addMessage("test4", ("\\Foo", "\\Recent", ), date="Right now4")
+    #inbox.addMessage("test5", ("\\Foo", "\\Recent", ), date="Right now5")
+
 
 userID = 'user@leap.se'  # TODO: get real USER from configs...
 

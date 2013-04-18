@@ -114,7 +114,7 @@ class SoledadAccountIndex(IndexedDB):
         try:
             self._index = self._get_index_doc()
         except MissingIndexError:
-            print "no index!!! creating..."
+            print "No SoledadAccountIndex. Creating one."
             self._create_index_doc()
 
     # setters and getters for the index document
@@ -532,6 +532,113 @@ class Message(u1db.Document):
     flags = property(_get_flags, _set_flags, doc="Message flags.")
 
 
+class LeapMessage(object):
+
+    implements(imap4.IMessage, imap4.IMessageFile)
+
+    def __init__(self, doc):
+        """
+        Initializes a LeapMessage.
+
+        @type doc: C{LeapDocument}
+        @param doc: A LeapDocument containing the internal
+        representation of the message
+        """
+        self._doc = doc
+
+    def getUID(self):
+        """
+        Retrieve the unique identifier associated with this message
+
+        @rtype: C{int}
+        """
+        return self._doc.content['mbox-uid']
+
+    def getFlags(self):
+        """
+        Retrieve the flags associated with this message
+
+        @rtype: C{iterable}
+        @return: The flags, represented as strings
+        """
+        flags = self._doc.content.get('flags', None)
+        if flags:
+            flags = map(str, flags)
+        return flags
+
+    def getInternalDate(self):
+        """
+        Retrieve the date internally associated with this message
+
+        @rtype: C{str}
+        @retur: An RFC822-formatted date string.
+        """
+        return str(self._doc.content.get('date', ''))
+
+    #
+    # IMessageFile
+    #
+
+    """
+    Optional message interface for representing messages as files.
+
+    If provided by message objects, this interface will be used instead
+    the more complex MIME-based interface.
+    """
+
+    def open(self):
+        """
+        Return an file-like object opened for reading.
+
+        Reading from the returned file will return all the bytes
+        of which this message consists.
+        """
+        fd = cStringIO.StringIO()
+        fd.write(str(self._doc.content.get('raw', '')))
+        fd.seek(0)
+        return fd
+
+    #
+    # IMessagePart
+    #
+
+    # XXX should implement the rest of IMessagePart interface:
+    # (and do not use the open above)
+
+    def getBodyFile(self):
+        """
+        Retrieve a file object containing only the body of this message.
+
+        @rtype: C{StringIO}
+        """
+        fd = StringIO.StringIO()
+        fd.write(str(self._doc.content.get('raw', '')))
+        # SHOULD use BODY FIELD ...
+        fd.seek(0)
+        return fd
+
+    def getSize(self):
+        """
+        Return the total size, in octets, of this message
+
+        @rtype: C{int}
+        """
+        return self.getBodyFile().len
+
+    def getHeaders(negate, *names):
+        # XXX implement headers
+        # as separate fields in the LeapDoc
+        return {}
+
+    # --- no multipart for now
+
+    def isMultipart(self):
+        return False
+
+    def getSubPart(part):
+        return None
+
+
 class MessageCollection(object):
     """
     A collection of messages, surprisingly.
@@ -540,14 +647,18 @@ class MessageCollection(object):
     Implements a filter query over the messages contained in a soledad
     database, and deals with the initialization of the soledad database.
     """
+    # XXX this should be able to produce a MessageSet methinks
+
     SEEN_INDEX = 'seen'
     FLAGS_INDEX = 'flags'
     MAILBOX_INDEX = 'mailbox'
+    UID_INDEX = 'uid-index'
 
     INDEXES = {
         FLAGS_INDEX: ['flags'],
         SEEN_INDEX: ['bool(seen)'],
-        MAILBOX_INDEX: ['mailbox']
+        MAILBOX_INDEX: ['mailbox'],
+        UID_INDEX: ['mbox-uid'],  # make this INT?
         # XXX Can we add some magic
         # for making more complex queries
         # when selecting by mailbox / flags?
@@ -558,6 +669,7 @@ class MessageCollection(object):
         "subject": "",
         "seen": False,
         "flags": [],
+        "mbox-uid": 1,
         "mailbox": "inbox",
     }
 
@@ -592,22 +704,17 @@ class MessageCollection(object):
         """
         # Ask the database for currently existing indexes.
         db_indexes = dict(self.db.list_indexes())
-        # Loop through the indexes we expect to find.
         for name, expression in self.INDEXES.items():
-            #print 'name is', name
             if name not in db_indexes:
                 # The index does not yet exist.
-                #print 'creating index'
                 self.db.create_index(name, *expression)
                 continue
 
             if expression == db_indexes[name]:
-                #print 'expression up to date'
                 # The index exists and is up to date.
                 continue
             # The index exists but the definition is not what expected, so we
             # delete it and add the proper index expression.
-            #print 'deleting index'
             self.db.delete_index(name)
             self.db.create_index(name, *expression)
 
@@ -619,7 +726,7 @@ class MessageCollection(object):
         """
         return copy.deepcopy(self.EMPTY_MSG)
 
-    def add_msg(self, raw, subject=None, flags=None, date=None):
+    def add_msg(self, raw, subject=None, flags=None, date=None, uid=1):
         """
         Creates a new message document.
 
@@ -652,6 +759,12 @@ class MessageCollection(object):
         content['raw'] = stringify(raw)
         content['date'] = date
 
+        # XXX this is completely hackish and in a rush
+        # to be able to show something. I have to think
+        # about uids much more, and surely move them to the index.
+        # They also should get a sanity check here.
+        content['mbox-uid'] = uid
+
         # Store the document in the database. Since we did not set a document
         # id, the database will store it as a new document, and generate
         # a valid id.
@@ -664,6 +777,15 @@ class MessageCollection(object):
         """
         self.db.delete_doc(msg)
 
+    def get_by_uid(self, uid):
+        """
+        Retrieves a message document by UID
+        """
+        # XXX ATCHUNG!
+        # THIS OPENS A CAN OF WORMS... We NEED
+        # TO ENSURE A GLOBAL INDEX HERE...
+        return self.db.get_from_index(self.UID_INDEX, str(uid))
+
     def get_all(self):
         """
         Get all messages for the selected mailbox
@@ -672,51 +794,80 @@ class MessageCollection(object):
 
         @rtype: list
         """
+        # XXX this should return LeapMessage instances
         return self.db.get_from_index(self.MAILBOX_INDEX, self.mbox)
 
     def get_unseen(self):
         """
-        Get all unseen messages
+        Get all messages with the `Unseen` flag
 
-        @rtype: list
+        @rtype: C{list}
+        @returns: a list of LeapMessages
         """
-        return [x for x in self.unseen_iter()]
+        return [LeapMessage(doc) for doc in self.unseen_iter()]
 
     def unseen_iter(self):
         """
-        Get only unseen messages for the selected mailbox
+        Get an iterator for the message docs with no `seen` flag
 
-        @rtype: iter
+        @rtype: C{iterable}
         """
         # we should be able to join the query-by-mailbox
         # and query-by-flag...
-        # make list comprenhension by now ...
         #return self.db.get_from_index(self.SEEN_INDEX, "0")
         return (doc for doc in self.get_all()
-                if doc.content['seen'] is False)
+                if "\\Seen" not in doc.content[self.FLAGS_INDEX])
+
+    def get_recent(self):
+        """
+        Get all messages with the `Recent` flag.
+
+        @type: C{list}
+        @returns: a list of LeapMessages
+        """
+        return [LeapMessage(doc) for doc in self.recent_iter()]
+
+    def recent_iter(self):
+        """
+        Get an iterator for the message docs with recent flag.
+
+        @rtype: C{iterable}
+        """
+        return (doc for doc in self.get_all()
+                if "\\Recent" in doc.content[self.FLAGS_INDEX])
 
     def count(self):
         """
-        Return the count of messages for this mailbox
+        Return the count of messages for this mailbox.
+
+        @rtype: C{int}
         """
         return len(self.get_all())
 
     def __len__(self):
         """
         Returns the number of messages on this mailbox
+
+        @rtype: C{int}
         """
         return self.count()
 
     def __iter__(self):
         """
         Returns an iterator over all messages
+
+        @rtype: C{iterable}
         """
         return (m.content for m in self.get_all())
 
     def __getitem__(self, key):
         """
         Allows indexing as a list
+
+        @type key: C{int}
+        @param key: an integer index
         """
+        # XXX this should return LeapMessage instances
         try:
             msg_doc = self.get_all()[key]
         except IndexError:
@@ -819,7 +970,7 @@ class SoledadMailbox(object):
             self._index._update_index_doc()
         else:
             #logger.debug('mailbox without access to the index')
-            print 'NO INDEX'
+            #print 'NO INDEX'
             self.flags = flags
 
     def _get_closed(self):
@@ -850,12 +1001,42 @@ class SoledadMailbox(object):
     # XXX missing docs...
 
     def getUIDValidity(self):
+        """
+        Return the unique validity identifier for this mailbox
+        @rtype: C{int}
+        """
+        # XXX get some hash form from the index doc?
+        # and convert it to long.
+        # or store it in the SoledadAccountIndex
         return 42
 
-    def getUID(self):
+    def getUID(self, message):
+        """
+        Return the UID of a message in the mailbox
+
+        @rtype: C{int}
+        """
+        # XXX
+        # what is this used for?
         return 0
 
+    # XXX ----------------------  ^^^ -----------------------
+
+    def getRecentCount(self):
+        """
+        Returns the number of messages with the 'Recent' flag
+
+        @rtype: C{int}
+        """
+        return len(self.messages.get_recent())
+
     def getUIDNext(self):
+        """
+        Return the likely UID for the next message added to this
+        mailbox
+
+        @rtype: C{int}
+        """
         return self.messages.count() + 1
 
     def getMessageCount(self):
@@ -870,24 +1051,18 @@ class SoledadMailbox(object):
         """
         return len(self.messages.get_unseen())
 
-    def getRecentCount(self):
-        """
-        Returns the count of recent messages in this mailbox
-        """
-        return 3
-
-    # XXX ----------------------  ^^^ -----------------------
-
     def isWriteable(self):
         """
-        Returns True if this mailbox is writable
-        @rtype: int
+        Get the read/write status of the mailbox
+        @rtype: C{int}
         """
         return self.rw
 
     def getHierarchicalDelimiter(self):
         """
         Returns the character used to delimite hierarchies in mailboxes
+
+        @rtype: C{str}
         """
         return '/'
 
@@ -919,28 +1094,32 @@ class SoledadMailbox(object):
         @flags: flag list
         @date: timestamp
         """
-        self.messages.add_msg(message, flags=flags, date=date)
+        # XXX we should treat the message as an IMessage from here
+        uid_next = self.getUIDNext()
+        self.messages.add_msg(message, flags=flags, date=date,
+                              uid=uid_next)
         return defer.succeed(None)
+
+    # commands, do not rename
 
     def destroy(self):
         """
-        Destroys this mailbox
-        """
-        # XXX should remove also the mailbox from index
-        self.deleteAllDocs()
+        Called before this mailbox is permanently deleted.
 
-    def deleteAllDocs(self):
+        Should cleanup resources, and set the \\Noselect flag
+        on the mailbox.
         """
-        Deletes all docs in this mailbox
-        """
-        docs = self.messages.get_all()
-        for doc in docs:
-            self.messages.db.delete_doc(doc)
+        self.deleteAllDocs()
+        # XXX should remove also the mailbox from index
+        # XXX flag as Noselect
 
     def expunge(self):
         """
-        Deletes all messages flagged \\Deleted
+        Remove all messages flagged \\Deleted
         """
+        # XXX if this is not open for R-W, this
+        # should raise ReadOnlyMailbox
+
         delete = []
         deleted = []
         for m in self.messages.get_all():
@@ -952,12 +1131,61 @@ class SoledadMailbox(object):
         #return [m for m in deleted]
         return [x for x in range(len(deleted))]
 
+    def fetch(self, messages, uid):
+        """
+        Retrieve one or more messages in this mailbox.
+
+        from rfc 3501: The data items to be fetched can be either a single atom
+        or a parenthesized list.
+
+        @type messages: C{MessageSet}
+        @param messages: IDs of the messages to retrieve information about
+
+        @type uid: C{bool}
+        @param uid: If true, the IDs are UIDs. They are message sequence IDs
+        otherwise.
+
+        @rtype: A tuple of two-tuples of message sequence numbers and
+        C{LeapMessage}
+        """
+        result = []
+        if not uid:
+            for last, first in messages.ranges:
+                if not last:
+                    last = self.messages.count()
+                for _id in range(first, last):
+                    msg_doc = self.messages.get_by_uid(_id)[0]
+                    msg = LeapMessage(msg_doc)
+                    result.append((_id, msg))
+        else:
+            for _, msgid in messages.ranges:
+                msg_doc = self.messages.get_by_uid(msgid)[0]
+                msg = LeapMessage(msg_doc)
+                result.append((msgid, msg))
+        return tuple(result)
+
+    def store(messages, flags, mode, uid):
+        """
+        Sets the flags of one or more messages.
+        """
+        raise NotImplemented("Store method not implemented")
+
     def close(self):
         """
         Expunge and mark as closed
         """
         self.expunge()
         self.closed = True
+
+    # convenience fun
+
+    def deleteAllDocs(self):
+        """
+        Deletes all docs in this mailbox
+        """
+        docs = self.messages.get_all()
+        for doc in docs:
+            self.messages.db.delete_doc(doc)
 
     def __repr__(self):
         return u"<SoledadMailbox: mbox '%s' (%s)>" % (
