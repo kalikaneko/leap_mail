@@ -16,33 +16,39 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 Test case for leap.email.imap.server
+TestCases taken from twisted tests and modified to make them work
+against SoledadBackedAccount.
 
 @authors: Kali Kaneko, <kali@leap.se>
+XXX add authors from the original twisted tests.
+
 @license: GPLv3, see included LICENSE file
 """
+# XXX review license of the original tests!!!
+
 try:
     from cStringIO import StringIO
 except ImportError:
     from StringIO import StringIO
 
-import codecs
-import locale
+#import codecs
+#import locale
 import os
 import types
 import tempfile
 import shutil
 
 
-from zope.interface import implements
+#from zope.interface import implements
 
-from twisted.mail.imap4 import MessageSet
+#from twisted.mail.imap4 import MessageSet
 from twisted.mail import imap4
 from twisted.protocols import loopback
 from twisted.internet import defer
-from twisted.internet import error
-from twisted.internet import reactor
-from twisted.internet import interfaces
-from twisted.internet.task import Clock
+#from twisted.internet import error
+#from twisted.internet import reactor
+#from twisted.internet import interfaces
+#from twisted.internet.task import Clock
 from twisted.trial import unittest
 from twisted.python import util, log
 from twisted.python import failure
@@ -51,9 +57,9 @@ from twisted import cred
 import twisted.cred.error
 import twisted.cred.checkers
 import twisted.cred.credentials
-import twisted.cred.portal
-
-from twisted.test.proto_helpers import StringTransport, StringTransportWithDisconnection
+#import twisted.cred.portal
+#
+#from twisted.test.proto_helpers import StringTransport, StringTransportWithDisconnection
 
 
 #import u1db

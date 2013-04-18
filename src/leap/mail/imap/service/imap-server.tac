@@ -1,3 +1,5 @@
+import logging
+
 from twisted.application import internet, service
 from twisted.internet.protocol import ServerFactory
 from twisted.mail import imap4
@@ -5,6 +7,9 @@ from twisted.mail import imap4
 from leap.common.check import leap_assert
 from leap.mail.imap.server import SoledadBackedAccount
 from leap.soledad import Soledad
+
+
+logger = logging.getLogger(__name__)
 
 
 class LeapIMAPServer(imap4.IMAP4Server):
@@ -26,6 +31,7 @@ class LeapIMAPServer(imap4.IMAP4Server):
         self.theAccount = theAccount
 
     def lineReceived(self, line):
+        logger.debug('rcv: %s' % line)
         imap4.IMAP4Server.lineReceived(self, line)
 
     def authenticateLogin(self, username, password):

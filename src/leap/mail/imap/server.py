@@ -236,6 +236,11 @@ class SoledadBackedAccount(object):
 
         self._db = soledad._db
 
+        # every user should see an inbox folder
+        # at least
+        if not self.mailboxes:
+            self.addMailbox('inbox')
+
     # XXX - this was allocating sequential IDs for the mailbox,
     # but since we're storing that in soledad index doc
     # we can get the document ID from there, no need for
@@ -249,11 +254,11 @@ class SoledadBackedAccount(object):
 
     @property
     def mailboxes(self):
-        return self._index.mailboxes
+        return map(str, self._index.mailboxes)
 
     @property
     def subscriptions(self):
-        return self._index.subscriptions
+        return map(str, self._index.subscriptions)
 
     def getMailbox(self, name):
         """
@@ -322,7 +327,9 @@ class SoledadBackedAccount(object):
             # cannot select a non-existent mailbox
             return None
 
-        self.selected = name
+        self.selected = str(name)
+
+        # XXX what should we return?
         return SoledadMailbox(
             name, rw=readwrite,
             soledad=self._soledad,
@@ -434,10 +441,16 @@ class SoledadBackedAccount(object):
     def listMailboxes(self, ref, wildcard):
         """
         List the mailboxes.
-        @param ref: XXX ---------------
-        @param wildcard: XXX ----------
+
+        from rfc 3501:
+        returns a subset of names from the complete set
+        of all names available to the client.  Zero or more untagged LIST
+        replies are returned, containing the name attributes, hierarchy
+        delimiter, and name.
+
+        @param ref: reference name
+        @param wildcard: mailbox name with possible wildcards
         """
-        # XXX fill docstring ----------
         ref = self._inferiorNames(ref.upper())
         wildcard = imap4.wildcardToRegexp(wildcard, '/')
         return [(i, self.getMailbox(i)) for i in ref if wildcard.match(i)]
@@ -784,10 +797,14 @@ class SoledadMailbox(object):
         @rtype: tuple
         """
         if self._index:
-            return self._index._flags.get(self.mbox, None)
+            ret = self._index._flags.get(self.mbox, None)
+            if ret:
+                ret = map(str, ret)
+            return ret
         else:
             logger.debug('mailbox without access to the index')
-            return self.flags or self.INIT_FLAGS
+            ret = self.flags or self.INIT_FLAGS
+            return map(str, ret)
 
     def setFlags(self, flags):
         """
@@ -798,7 +815,7 @@ class SoledadMailbox(object):
                     "flags expected to be a tuple")
 
         if self._index:
-            self._index._flags[self.mbox] = flags
+            self._index._flags[self.mbox] = map(str, flags)
             self._index._update_index_doc()
         else:
             #logger.debug('mailbox without access to the index')
