@@ -1,15 +1,24 @@
-import logging
+import datetime
+from functools import partial
 
 from twisted.application import internet, service
 from twisted.internet.protocol import ServerFactory
 from twisted.mail import imap4
+from twisted.python import log
 
 from leap.common.check import leap_assert
 from leap.mail.imap.server import SoledadBackedAccount
 from leap.soledad import Soledad
 
+# Some constants
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# The port in which imap service will run
+IMAP_PORT = 9930
 
-logger = logging.getLogger(__name__)
+# The period between succesive checks of the incoming mail
+# queue (in seconds)
+INCOMING_CHECK_PERIOD = 10
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 
 class LeapIMAPServer(imap4.IMAP4Server):
@@ -26,19 +35,24 @@ class LeapIMAPServer(imap4.IMAP4Server):
 
         # initialize imap server!
         imap4.IMAP4Server.__init__(self, *args, **kwargs)
-        theAccount = SoledadBackedAccount(
-            user, soledad=soledad)
+
+	# we should initialize the account here,
+	# but we move it to the factory so we can 
+	# populate the test account properly (and only once
+	# per session)
+
+        # theAccount = SoledadBackedAccount(
+        #     user, soledad=soledad)
+
 
         # ---------------------------------
         # XXX pre-populate acct for tests!!
-        populate_test_account(theAccount)
+        # populate_test_account(theAccount)
         # ---------------------------------
-	# import ipdb; ipdb.set_trace()
-
-        self.theAccount = theAccount
+        #self.theAccount = theAccount
 
     def lineReceived(self, line):
-        logger.debug('rcv: %s' % line)
+        log.msg('rcv: %s' % line)
         imap4.IMAP4Server.lineReceived(self, line)
 
     def authenticateLogin(self, username, password):
@@ -67,12 +81,23 @@ class LeapIMAPFactory(ServerFactory):
         self._soledad = soledad
         self._gpg = gpg
 
+        theAccount = SoledadBackedAccount(
+            user, soledad=soledad)
+
+
+        # ---------------------------------
+        # XXX pre-populate acct for tests!!
+        populate_test_account(theAccount)
+        # ---------------------------------
+        self.theAccount = theAccount
+
     def buildProtocol(self, addr):
         "Return a protocol suitable for the job."
         imapProtocol = LeapIMAPServer(
             user=self._user,
             soledad=self._soledad,
             gpg=self._gpg)
+	imapProtocol.theAccount = self.theAccount
         imapProtocol.factory = self
         return imapProtocol
 
@@ -120,25 +145,40 @@ def populate_test_account(acct):
     """
     Populates inbox for testing purposes
     """
+    print "populating test account!"
     inbox = acct.getMailbox('inbox')
     inbox.addMessage(mail_sample, ("\\Foo", "\\Recent",), date="Right now2")
-    inbox.addMessage("test2", ("\\Foo", "\\Recent", ), date="Right now3")
-    inbox.addMessage("test3", ("\\Foo", "\\Recent", ), date="Right now3")
 
-    #inbox.addMessage("test4", ("\\Foo", "\\Recent", ), date="Right now4")
-    #inbox.addMessage("test5", ("\\Foo", "\\Recent", ), date="Right now5")
+
+def incoming_check(acct):
+    """
+    Check incoming queue. To be called periodically.
+    """
+    # FIXME -------------------------------------
+    # XXX should instantiate LeapIncomingMail
+    # properly, and just call its `fetch` method...
+    # --------------------------------------------
+
+    log.msg("checking incoming queue...")
+
+    inbox = acct.getMailbox('inbox')
+    ts = datetime.datetime.ctime(datetime.datetime.utcnow())
+    inbox.addMessage("test!", ("\\Foo", "\\Recent", ), date=ts)
 
 
 userID = 'user@leap.se'  # TODO: get real USER from configs...
 
+# This initialization form is failing:
 #soledad = Soledad(userID)
+
 soledad = initialize_soledad(userID, '/tmp', '/tmp')
 gpg = None
 
-IMAP_PORT = 9930
 factory = LeapIMAPFactory(userID, soledad, gpg)
 
-# this is the important bit
 application = service.Application("LEAP IMAP4 Local Service")
 imapService = internet.TCPServer(IMAP_PORT, factory)
 imapService.setServiceParent(application)
+
+incoming_check_for_acct = partial(incoming_check, factory.theAccount)
+internet.TimerService(INCOMING_CHECK_PERIOD, incoming_check_for_acct).setServiceParent(application)

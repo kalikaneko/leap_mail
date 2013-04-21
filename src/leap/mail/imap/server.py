@@ -1168,6 +1168,7 @@ class SoledadMailbox(object):
         """
         Sets the flags of one or more messages.
         """
+        print "Not implemented!"
         raise NotImplemented("Store method not implemented")
 
     def close(self):
