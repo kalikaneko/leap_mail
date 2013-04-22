@@ -7,5 +7,5 @@ More info: https://leap.se
 running tests
 -------------
 
-* nosetests leap.mail.imap
+* nosetests --with-progressive leap.mail.imap.test_imap
 * trial leap.mail.smtp

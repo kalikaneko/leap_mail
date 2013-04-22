@@ -57,8 +57,8 @@ from twisted import cred
 import twisted.cred.error
 import twisted.cred.checkers
 import twisted.cred.credentials
-#import twisted.cred.portal
-#
+import twisted.cred.portal
+
 #from twisted.test.proto_helpers import StringTransport, StringTransportWithDisconnection
 
 
@@ -396,6 +396,7 @@ class MessageCollectionTestCase(IMAP4HelperMixin, unittest.TestCase):
         self.assertEqual(em,
                          {"subject": "", "seen": False,
                           "flags": [], "mailbox": "inbox",
+                          "mbox-uid": 1,
                           "raw": ""})
         self.assertEqual(self.messages.count(), 0)
 
@@ -728,10 +729,10 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         mbox = SimpleLEAPServer.theAccount.getMailbox('TESTMAILBOX')
         self.assertEqual(self.server.mbox.messages.mbox, mbox.messages.mbox)
         self.assertEqual(self.selectedArgs, {
-            'EXISTS': 0, 'RECENT': 3, 'UIDVALIDITY': 42,
+            'EXISTS': 0, 'RECENT': 0, 'UIDVALIDITY': 42,
             'FLAGS': ('\\Seen', '\\Answered', '\\Flagged',
                       '\\Deleted', '\\Draft', '\\Recent', 'List'),
-            'READ-WRITE': 1
+            'READ-WRITE': True
         })
 
     #
@@ -928,7 +929,7 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         mbox = SimpleLEAPServer.theAccount.getMailbox('TEST-MAILBOX')
         self.assertEqual(self.server.mbox.messages.mbox, mbox.messages.mbox)
         self.assertEqual(self.examinedArgs, {
-            'EXISTS': 0, 'RECENT': 3, 'UIDVALIDITY': 42,
+            'EXISTS': 0, 'RECENT': 0, 'UIDVALIDITY': 42,
             'FLAGS': ('\\Seen', '\\Answered', '\\Flagged',
                       '\\Deleted', '\\Draft', '\\Recent', 'List'),
             'READ-WRITE': False})

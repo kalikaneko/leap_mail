@@ -378,6 +378,7 @@ class SoledadBackedAccount(object):
         """
         oldname = oldname.upper()
         newname = newname.upper()
+
         if oldname not in self.mailboxes:
             raise imap4.NoSuchMailbox, oldname
 
@@ -389,7 +390,7 @@ class SoledadBackedAccount(object):
                 raise imap4.MailboxCollision, new
 
         for (old, new) in inferiors:
-            self.mailboxes[self.mailboxes.index(old)] = new
+            self._index.mailboxes[self._index.mailboxes.index(old)] = new
 
         # XXX ---- FIXME!!!! ------------------------------------
         # until here we just renamed the index...
