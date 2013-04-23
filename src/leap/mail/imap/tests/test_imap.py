@@ -704,7 +704,7 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         """
         Try to select a mailbox
         """
-        SimpleLEAPServer.theAccount.addMailbox('TESTMAILBOX')
+        self.server.theAccount.addMailbox('TESTMAILBOX-SELECT', creation_ts=42)
         self.selectedArgs = None
 
         def login():
@@ -714,7 +714,7 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
             def selected(args):
                 self.selectedArgs = args
                 self._cbStopClient(None)
-            d = self.client.select('TESTMAILBOX')
+            d = self.client.select('TESTMAILBOX-SELECT')
             d.addCallback(selected)
             return d
 
@@ -726,7 +726,7 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         return defer.gatherResults([d1, d2]).addCallback(self._cbTestSelect)
 
     def _cbTestSelect(self, ignored):
-        mbox = SimpleLEAPServer.theAccount.getMailbox('TESTMAILBOX')
+        mbox = SimpleLEAPServer.theAccount.getMailbox('TESTMAILBOX-SELECT')
         self.assertEqual(self.server.mbox.messages.mbox, mbox.messages.mbox)
         self.assertEqual(self.selectedArgs, {
             'EXISTS': 0, 'RECENT': 0, 'UIDVALIDITY': 42,
@@ -904,7 +904,10 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         See U{RFC 3501<http://www.faqs.org/rfcs/rfc3501.html>}, section 6.3.2,
         for details.
         """
-        SimpleLEAPServer.theAccount.addMailbox('test-mailbox')
+        self.server.theAccount.addMailbox('test-mailbox-e',
+                                          creation_ts=42)
+        #import ipdb; ipdb.set_trace()
+
         self.examinedArgs = None
 
         def login():
@@ -914,7 +917,7 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
             def examined(args):
                 self.examinedArgs = args
                 self._cbStopClient(None)
-            d = self.client.examine('test-mailbox')
+            d = self.client.examine('test-mailbox-e')
             d.addCallback(examined)
             return d
 
@@ -926,7 +929,7 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         return d.addCallback(self._cbTestExamine)
 
     def _cbTestExamine(self, ignored):
-        mbox = SimpleLEAPServer.theAccount.getMailbox('TEST-MAILBOX')
+        mbox = self.server.theAccount.getMailbox('TEST-MAILBOX-E')
         self.assertEqual(self.server.mbox.messages.mbox, mbox.messages.mbox)
         self.assertEqual(self.examinedArgs, {
             'EXISTS': 0, 'RECENT': 0, 'UIDVALIDITY': 42,
@@ -935,9 +938,12 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
             'READ-WRITE': False})
 
     def _listSetup(self, f):
-        SimpleLEAPServer.theAccount.addMailbox('root/subthingl')
-        SimpleLEAPServer.theAccount.addMailbox('root/another-thing')
-        SimpleLEAPServer.theAccount.addMailbox('non-root/subthing')
+        SimpleLEAPServer.theAccount.addMailbox('root/subthingl',
+                                               creation_ts=42)
+        SimpleLEAPServer.theAccount.addMailbox('root/another-thing',
+                                               creation_ts=42)
+        SimpleLEAPServer.theAccount.addMailbox('non-root/subthing',
+                                               creation_ts=42)
 
         def login():
             return self.client.login('testuser', 'password-test')

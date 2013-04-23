@@ -21,6 +21,7 @@ import copy
 import logging
 import StringIO
 import cStringIO
+import time
 
 from zope.interface import implements
 
@@ -31,7 +32,7 @@ from twisted.internet import defer
 
 import u1db
 
-from leap.common.check import leap_assert
+from leap.common.check import leap_assert, leap_assert_type
 from leap.soledad.backends.sqlcipher import SQLCipherDatabase
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,7 @@ class SoledadAccountIndex(IndexedDB):
     keeps track of mailboxes and subscriptions
     """
     _index = None
+    MBOX_CREATION_KEY = "created"
 
     def __init__(self, soledad=None):
         """
@@ -119,6 +121,8 @@ class SoledadAccountIndex(IndexedDB):
 
     # setters and getters for the index document
 
+    # mailboxes
+
     def _get_mailboxes(self):
         """Get mailboxes associated with this account."""
         return self._index.content.setdefault('mailboxes', [])
@@ -131,6 +135,96 @@ class SoledadAccountIndex(IndexedDB):
     mailboxes = property(
         _get_mailboxes, _set_mailboxes, doc="Account mailboxes.")
 
+    def addMailbox(self, name, creation_ts=None):
+        """
+        Add a mailbox to the mailboxes list.
+
+        @param name: the mailbox name to add
+        @type name: C{str}
+
+        @param creation_ts: an optional timestamp integer that will be
+            used as a permanent identificator for the mailbox. By default
+            a value based on the system time will be used.
+        @type creation_ts: C{int}
+        """
+        name = name.upper()
+        if not creation_ts:
+            # by default, we pass an int value
+            # taken from the current time
+            creation_ts = int(time.time() * 10E2)
+
+        self.mailboxes.append(name)
+        self.setMailboxCreationTimestamp(
+            name,
+            creation_ts)
+
+        self._update_index_doc()
+
+    def removeMailbox(self, name):
+        """Remove a mailbox from the mailboxes list, and reset its
+        entry in the mailbox properties dictionary."""
+        name = name.upper()
+        self.mailboxes.remove(name)
+        self._mailbox_dict[name] = {}
+        self._update_index_doc()
+
+    # mailbox_dict (all info about mailboxes, should get flags and status
+    # in here too)
+    # TODO maybe use nested document instead?
+
+    def _get_mailbox_dict(self):
+        """Get mailbox dict associated with this account."""
+        return self._index.content.setdefault('mailbox_dict', {})
+
+    def _set_mailbox_dict(self, mailbox_dict):
+        """Set mailbox_dict associated with this account."""
+        self._index.content['mailbox_dict'] = mailbox_dict
+        self._update_index_doc()
+
+    _mailbox_dict = property(
+        _get_mailbox_dict, _set_mailbox_dict, doc="Mailbox config dictionary.")
+
+    def _getMailboxProperty(self, mbox, key):
+        """Get a property from the mailbox dict"""
+        mboxd = self._mailbox_dict.setdefault(mbox, {})
+        return mboxd.get(key, None)
+
+    def _setMailboxProperty(self, mbox, key, value):
+        """Set a property in the mailbox dict"""
+        mboxd = self._mailbox_dict.setdefault(mbox, {})
+        mboxd[key] = value
+        self._mailbox_dict[mbox] = mboxd
+        self._update_index_doc()
+
+    def setMailboxCreationTimestamp(self, mbox, value, force=False):
+        """Sets the creation timestamp for a mailbox.
+
+        If a value already exists for the `created` key for that mailbox,
+        it will only be updated if `force` is True
+
+        @param mbox: the mailbox to update
+        @param value: the timestamp for this mailbox
+        @type value: C{int}
+        @rtype: C{bool}
+        @return: True if the operation was successful
+        """
+        leap_assert_type(value, int)
+        created = self._getMailboxProperty(mbox, self.MBOX_CREATION_KEY)
+        if not created or force:
+            self._setMailboxProperty(mbox, self.MBOX_CREATION_KEY, value)
+            return True
+        print "fail while setting timestamp"
+        return False
+
+    def getMailboxUIDValidity(self, mbox):
+        """
+        Returns the creation timestamp of the mailbox, which we use
+        as a UIDVALIDITY value.
+        """
+        return self._getMailboxProperty(mbox, self.MBOX_CREATION_KEY)
+
+    # subscriptions
+
     def _get_subscriptions(self):
         """Get subscriptions associated with this account."""
         return self._index.content.setdefault('subscriptions', [])
@@ -142,17 +236,6 @@ class SoledadAccountIndex(IndexedDB):
 
     subscriptions = property(
         _get_subscriptions, _set_subscriptions, doc="Account subscriptions.")
-
-    def addMailbox(self, name):
-        """add a mailbox to the mailboxes list."""
-        name = name.upper()
-        self.mailboxes.append(name)
-        self._update_index_doc()
-
-    def removeMailbox(self, name):
-        """remove a mailbox from the mailboxes list."""
-        self.mailboxes.remove(name)
-        self._update_index_doc()
 
     def addSubscription(self, name):
         """add a subscription to the subscriptions list."""
@@ -167,10 +250,13 @@ class SoledadAccountIndex(IndexedDB):
         self.subscriptions.remove(name)
         self._update_index_doc()
 
+    # ------------------------------------------------------
+    # flags and status are separate fields now,
+    # but should move to mailbox dict
+
     #
     # flags
     #
-
     def _get_flags(self):
         """Get flags from index for the account."""
         return self._index.content.setdefault('flags', {})
@@ -186,6 +272,8 @@ class SoledadAccountIndex(IndexedDB):
     #
     # status
     #
+
+    # XXX move to mailbox dict ...
 
     def _get_mailbox_status(self):
         """Get status from index for the account."""
@@ -254,20 +342,31 @@ class SoledadBackedAccount(object):
 
     @property
     def mailboxes(self):
+        """
+        A list of the current mailboxes for this account.
+        """
         return map(str, self._index.mailboxes)
 
     @property
     def subscriptions(self):
+        """
+        A list of the current subscriptions for this account.
+        """
         return map(str, self._index.subscriptions)
 
     def getMailbox(self, name):
         """
         Returns Mailbox with that name, without selecting it.
-        @param: name
+
+        @param name: name of the mailbox
+        @type name: C{str}
+
+        @returns: a a SoledadMailbox instance
         """
         name = name.upper()
+        if name not in self.mailboxes:
+            raise imap4.MailboxException("No such mailbox")
 
-        # XXX check that name in self.mailboxes
         return SoledadMailbox(name, soledad=self._soledad,
                               index=self._index)
 
@@ -275,18 +374,26 @@ class SoledadBackedAccount(object):
     ## IAccount
     ##
 
-    def addMailbox(self, name):
+    def addMailbox(self, name, creation_ts=None):
         """
-        Adds a mailbox to the account
+        Adds a mailbox to the account.
 
         @param name: the name of the mailbox
         @type name: str
+
+        @param creation_ts: a optional creation timestamp to be used as
+            mailbox id. A timestamp will be used if no one is provided.
+        @type creation_ts: C{int}
+
+        @returns: True if successful
         @rtype: bool
         """
         name = name.upper()
+        # XXX should check mailbox name for RFC-compliant form
+
         if name in self.mailboxes:
             raise imap4.MailboxCollision, name
-        self._index.addMailbox(name)
+        self._index.addMailbox(name, creation_ts=creation_ts)
         return True
 
     def create(self, pathspec):
@@ -324,7 +431,6 @@ class SoledadBackedAccount(object):
         name = name.upper()
 
         if name not in self.mailboxes:
-            # cannot select a non-existent mailbox
             return None
 
         self.selected = str(name)
@@ -998,18 +1104,15 @@ class SoledadMailbox(object):
     closed = property(
         _get_closed, _set_closed, doc="Closed attribute.")
 
-    # XXX FIXME --------------- IMPLEMENT THIS ------------
-    # XXX missing docs...
-
     def getUIDValidity(self):
         """
         Return the unique validity identifier for this mailbox
+
         @rtype: C{int}
         """
-        # XXX get some hash form from the index doc?
-        # and convert it to long.
-        # or store it in the SoledadAccountIndex
-        return 42
+        return self._index.getMailboxUIDValidity(self.mbox)
+
+    # XXX implement -----------------------------------------
 
     def getUID(self, message):
         """
@@ -1038,6 +1141,7 @@ class SoledadMailbox(object):
 
         @rtype: C{int}
         """
+        # XXX reimplement with proper index
         return self.messages.count() + 1
 
     def getMessageCount(self):
@@ -1101,7 +1205,7 @@ class SoledadMailbox(object):
                               uid=uid_next)
         return defer.succeed(None)
 
-    # commands, do not rename
+    # commands, do not rename methods
 
     def destroy(self):
         """
@@ -1111,7 +1215,7 @@ class SoledadMailbox(object):
         on the mailbox.
         """
         self.deleteAllDocs()
-        # XXX should remove also the mailbox from index
+        #self._index.removeMailbox(self.mbox)
         # XXX flag as Noselect
 
     def expunge(self):
