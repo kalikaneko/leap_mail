@@ -68,12 +68,11 @@ from leap.common.testing.basetest import BaseLeapTest
 from leap.mail.imap.server import SoledadMailbox
 from leap.mail.imap.server import SoledadBackedAccount
 from leap.mail.imap.server import MessageCollection
-from leap.mail.imap.tests import PUBLIC_KEY
-from leap.mail.imap.tests import PRIVATE_KEY
+#from leap.mail.imap.tests import PUBLIC_KEY
+#from leap.mail.imap.tests import PRIVATE_KEY
 
 from leap.soledad import Soledad
-from leap.soledad.util import GPGWrapper
-from leap.soledad.backends.leap_backend import LeapDocument
+from leap.soledad import SoledadCrypto
 
 
 def strip(f):
@@ -100,18 +99,26 @@ def initialize_soledad(email, gnupg_home, tempdir):
     @param tempdir: path to temporal dir
     @rtype: Soledad instance
     """
-    _soledad = Soledad(email, gnupg_home=gnupg_home,
-                       bootstrap=False,
-                       prefix=tempdir)
-    _soledad._init_dirs()
-    _soledad._gpg = GPGWrapper(gnupghome=gnupg_home,
-                               verbose=False)
 
-    if not _soledad._has_privkey():
-        _soledad._set_privkey(PRIVATE_KEY)
-    if not _soledad._has_symkey():
-        _soledad._gen_symkey()
-    _soledad._load_symkey()
+    uuid = "foobar-uuid"
+    passphrase = "verysecretpassphrase"
+    secret_path = os.path.join(tempdir, "secret.gpg")
+    local_db_path = os.path.join(tempdir, "soledad.u1db")
+    server_url = "http://provider"
+    cert_file = ""
+
+    _soledad = Soledad(
+        uuid,  # user's uuid, obtained through signal events
+        passphrase,  # how to get this?
+        secret_path,  # how to get this?
+        local_db_path,  # how to get this?
+        server_url,  # can be None for now
+        cert_file,
+        bootstrap=False)
+    _soledad._init_dirs()
+    _soledad._crypto = SoledadCrypto(_soledad)
+    _soledad._shared_db = None
+    _soledad._init_keys()
     _soledad._init_db()
 
     return _soledad
@@ -1078,7 +1085,7 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
             return self.client.append(
                 'root/subthing',
                 message,
-                ('\\SEEN', '\\DELETED'),
+                ['\\SEEN', '\\DELETED'],
                 'Tue, 17 Jun 2003 11:22:16 -0600 (MDT)',
             )
 
@@ -1136,7 +1143,7 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         mb = SimpleLEAPServer.theAccount.getMailbox('PARTIAL/SUBTHING')
         self.assertEqual(1, len(mb.messages))
         self.assertEqual(
-            ['\\SEEN'],
+            ['\\SEEN',],
             mb.messages[1]['flags']
         )
         self.assertEqual(
@@ -1177,9 +1184,9 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
 
         m = SimpleLEAPServer.theAccount.getMailbox(name)
         m.messages.add_msg('', subject="Message 1",
-                           flags=['\\Deleted', 'AnotherFlag'])
-        m.messages.add_msg('', subject="Message 2", flags=['AnotherFlag'])
-        m.messages.add_msg('', subject="Message 3", flags=['\\Deleted'])
+                           flags=('\\Deleted', 'AnotherFlag'))
+        m.messages.add_msg('', subject="Message 2", flags=('AnotherFlag',))
+        m.messages.add_msg('', subject="Message 3", flags=('\\Deleted',))
 
         def login():
             return self.client.login('testuser', 'password-test')
@@ -1213,9 +1220,9 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         SimpleLEAPServer.theAccount.addMailbox(name)
         m = SimpleLEAPServer.theAccount.getMailbox(name)
         m.messages.add_msg('', subject="Message 1",
-                           flags=['\\Deleted', 'AnotherFlag'])
-        m.messages.add_msg('', subject="Message 2", flags=['AnotherFlag'])
-        m.messages.add_msg('', subject="Message 3", flags=['\\Deleted'])
+                           flags=('\\Deleted', 'AnotherFlag'))
+        m.messages.add_msg('', subject="Message 2", flags=('AnotherFlag',))
+        m.messages.add_msg('', subject="Message 3", flags=('\\Deleted',))
 
         def login():
             return self.client.login('testuser', 'password-test')

@@ -1,4 +1,5 @@
 import datetime
+import os
 from functools import partial
 
 from twisted.application import internet, service
@@ -9,6 +10,7 @@ from twisted.python import log
 from leap.common.check import leap_assert
 from leap.mail.imap.server import SoledadBackedAccount
 from leap.soledad import Soledad
+from leap.soledad import SoledadCrypto
 
 # Some constants
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -37,13 +39,12 @@ class LeapIMAPServer(imap4.IMAP4Server):
         imap4.IMAP4Server.__init__(self, *args, **kwargs)
 
 	# we should initialize the account here,
-	# but we move it to the factory so we can 
+	# but we move it to the factory so we can
 	# populate the test account properly (and only once
 	# per session)
 
         # theAccount = SoledadBackedAccount(
         #     user, soledad=soledad)
-
 
         # ---------------------------------
         # XXX pre-populate acct for tests!!
@@ -84,7 +85,6 @@ class LeapIMAPFactory(ServerFactory):
         theAccount = SoledadBackedAccount(
             user, soledad=soledad)
 
-
         # ---------------------------------
         # XXX pre-populate acct for tests!!
         populate_test_account(theAccount)
@@ -97,7 +97,7 @@ class LeapIMAPFactory(ServerFactory):
             user=self._user,
             soledad=self._soledad,
             gpg=self._gpg)
-	imapProtocol.theAccount = self.theAccount
+        imapProtocol.theAccount = self.theAccount
         imapProtocol.factory = self
         return imapProtocol
 
@@ -107,32 +107,39 @@ class LeapIMAPFactory(ServerFactory):
 #
 # XXX initialize gpg
 
-from leap.mail.imap.tests import PUBLIC_KEY
-from leap.mail.imap.tests import PRIVATE_KEY
-from leap.soledad.util import GPGWrapper
+#from leap.mail.imap.tests import PUBLIC_KEY
+#from leap.mail.imap.tests import PRIVATE_KEY
+#from leap.soledad.util import GPGWrapper
 
 
-def initialize_soledad(email, gnupg_home, tempdir):
+def initialize_soledad(uuid, passphrase, tempdir):
     """
     Initializes soledad by hand
 
-    @param email: ID for the user
-    @param gnupg_home: path to home used by gnupg
+    @param uuid: uuid for the user
+    @param passphrase: ...
     @param tempdir: path to temporal dir
     @rtype: Soledad instance
     """
-    _soledad = Soledad(email, gnupg_home=gnupg_home,
-                       bootstrap=False,
-                       prefix=tempdir)
-    _soledad._init_dirs()
-    _soledad._gpg = GPGWrapper(gnupghome=gnupg_home,
-                               verbose=False)
+    uuid = "foobar-uuid"
+    passphrase = "verysecretpassphrase"
+    secret_path = os.path.join(tempdir, "secret.gpg")
+    local_db_path = os.path.join(tempdir, "soledad.u1db")
+    server_url = "http://provider"
+    cert_file = ""
 
-    if not _soledad._has_privkey():
-        _soledad._set_privkey(PRIVATE_KEY)
-    if not _soledad._has_symkey():
-        _soledad._gen_symkey()
-    _soledad._load_symkey()
+    _soledad = Soledad(
+        uuid,  # user's uuid, obtained through signal events
+        passphrase,  # how to get this?
+        secret_path,  # how to get this?
+        local_db_path,  # how to get this?
+        server_url,  # can be None for now
+        cert_file,
+        bootstrap=False)
+    _soledad._init_dirs()
+    _soledad._crypto = SoledadCrypto(_soledad)
+    _soledad._shared_db = None
+    _soledad._init_keys()
     _soledad._init_db()
 
     return _soledad

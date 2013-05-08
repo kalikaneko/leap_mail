@@ -146,8 +146,8 @@ class SoledadBackedAccount(IndexedDB):
         # every user should see an inbox folder
         # at least
 
-        #if not self.mailboxes:
-            #self.addMailbox('inbox')
+        if not self.mailboxes:
+            self.addMailbox('inbox')
 
     def _get_empty_mailbox(self):
         """
@@ -646,8 +646,8 @@ class MessageCollection(object):
         @type uid: C{int}
         """
         if flags is None:
-            flags = []
-        leap_assert_type(flags, list)
+            flags = tuple()
+        leap_assert_type(flags, tuple)
 
         def stringify(o):
             if isinstance(o, (cStringIO.OutputType, StringIO.StringIO)):
@@ -994,6 +994,7 @@ class SoledadMailbox(object):
         """
         # XXX we should treat the message as an IMessage from here
         uid_next = self.getUIDNext()
+        flags = tuple(str(flag) for flag in flags)
         self.messages.add_msg(message, flags=flags, date=date,
                               uid=uid_next)
         return defer.succeed(None)
@@ -1057,12 +1058,12 @@ class SoledadMailbox(object):
                 if not last:
                     last = self.messages.count()
                 for _id in range(first, last):
-                    msg_doc = self.messages.get_by_uid(_id)[0]
+                    msg_doc = self.messages.get_by_uid(_id)
                     msg = LeapMessage(msg_doc)
                     result.append((_id, msg))
         else:
             for _, msgid in messages.ranges:
-                msg_doc = self.messages.get_by_uid(msgid)[0]
+                msg_doc = self.messages.get_by_uid(msgid)
                 msg = LeapMessage(msg_doc)
                 result.append((msgid, msg))
         return tuple(result)
