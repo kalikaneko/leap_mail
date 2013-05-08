@@ -38,10 +38,6 @@ from leap.soledad.backends.sqlcipher import SQLCipherDatabase
 logger = logging.getLogger(__name__)
 
 
-###################################
-# SoledadAccount Index
-###################################
-
 class MissingIndexError(Exception):
     """raises when tried to access a non existent index document"""
 
@@ -76,218 +72,6 @@ class IndexedDB(object):
             self._db.create_index(name, *expression)
 
 
-'''
-EMPTY_INDEXDOC = {
-    "is_index": True,
-    "mailboxes": [],
-    "subscriptions": [],
-    "flags": {},
-    "status": {}}
-get_empty_indexdoc = lambda: copy.deepcopy(EMPTY_INDEXDOC)
-
-
-class SoledadAccountIndex(IndexedDB):
-    """
-    Index for the Soledad Account
-    keeps track of mailboxes and subscriptions
-    """
-    _index = None
-    MBOX_CREATION_KEY = "created"
-
-    def __init__(self, soledad=None):
-        """
-        Constructor for the SoledadAccountIndex.
-        Needs a soledad intance to be initialized
-        """
-        leap_assert(soledad, "Need a soledad instance to initialize")
-        # XXX instance check
-
-        self._soledad = soledad
-        self._db = soledad._db
-        self._initialize_db()
-
-    def _initialize_db(self):
-        """initialize the database"""
-        db_indexes = dict(self._soledad._db.list_indexes())
-        name, expression = "isindex", ["bool(is_index)"]
-        if name not in db_indexes:
-            self._soledad._db.create_index(name, *expression)
-        try:
-            self._index = self._get_index_doc()
-        except MissingIndexError:
-            print "No SoledadAccountIndex. Creating one."
-            self._create_index_doc()
-
-    # setters and getters for the index document
-
-    # mailboxes
-
-    def _get_mailboxes(self):
-        """Get mailboxes associated with this account."""
-        return self._index.content.setdefault('mailboxes', [])
-
-    def _set_mailboxes(self, mailboxes):
-        """Set mailboxes associated with this account."""
-        self._index.content['mailboxes'] = list(set(mailboxes))
-        self._update_index_doc()
-
-    mailboxes = property(
-        _get_mailboxes, _set_mailboxes, doc="Account mailboxes.")
-
-    def addMailbox(self, name, creation_ts=None):
-        """
-        Add a mailbox to the mailboxes list.
-
-        @param name: the mailbox name to add
-        @type name: C{str}
-
-        @param creation_ts: an optional timestamp integer that will be
-            used as a permanent identificator for the mailbox. By default
-            a value based on the system time will be used.
-        @type creation_ts: C{int}
-        """
-        name = name.upper()
-        if not creation_ts:
-            # by default, we pass an int value
-            # taken from the current time
-            creation_ts = int(time.time() * 10E2)
-
-        self.mailboxes.append(name)
-        self.setMailboxCreationTimestamp(
-            name,
-            creation_ts)
-
-        self._update_index_doc()
-
-    def removeMailbox(self, name):
-        """Remove a mailbox from the mailboxes list, and reset its
-        entry in the mailbox properties dictionary."""
-        name = name.upper()
-        self.mailboxes.remove(name)
-        self._mailbox_dict[name] = {}
-        self._update_index_doc()
-
-    # mailbox_dict (all info about mailboxes, should get flags and status
-    # in here too)
-    # TODO maybe use nested document instead?
-
-    def _get_mailbox_dict(self):
-        """Get mailbox dict associated with this account."""
-        return self._index.content.setdefault('mailbox_dict', {})
-
-    def _set_mailbox_dict(self, mailbox_dict):
-        """Set mailbox_dict associated with this account."""
-        self._index.content['mailbox_dict'] = mailbox_dict
-        self._update_index_doc()
-
-    _mailbox_dict = property(
-        _get_mailbox_dict, _set_mailbox_dict, doc="Mailbox config dictionary.")
-
-    def _getMailboxProperty(self, mbox, key):
-        """Get a property from the mailbox dict"""
-        mboxd = self._mailbox_dict.setdefault(mbox, {})
-        return mboxd.get(key, None)
-
-    def _setMailboxProperty(self, mbox, key, value):
-        """Set a property in the mailbox dict"""
-        mboxd = self._mailbox_dict.setdefault(mbox, {})
-        mboxd[key] = value
-        self._mailbox_dict[mbox] = mboxd
-        self._update_index_doc()
-
-    def setMailboxCreationTimestamp(self, mbox, value, force=False):
-        """Sets the creation timestamp for a mailbox.
-
-        If a value already exists for the `created` key for that mailbox,
-        it will only be updated if `force` is True
-
-        @param mbox: the mailbox to update
-        @param value: the timestamp for this mailbox
-        @type value: C{int}
-        @rtype: C{bool}
-        @return: True if the operation was successful
-        """
-        leap_assert_type(value, int)
-        created = self._getMailboxProperty(mbox, self.MBOX_CREATION_KEY)
-        if not created or force:
-            self._setMailboxProperty(mbox, self.MBOX_CREATION_KEY, value)
-            return True
-        print "fail while setting timestamp"
-        return False
-
-    def getMailboxUIDValidity(self, mbox):
-        """
-        Returns the creation timestamp of the mailbox, which we use
-        as a UIDVALIDITY value.
-        """
-        return self._getMailboxProperty(mbox, self.MBOX_CREATION_KEY)
-
-    # subscriptions
-
-    def _get_subscriptions(self):
-        """Get subscriptions associated with this account."""
-        return self._index.content.setdefault('subscriptions', [])
-
-    def _set_subscriptions(self, subscriptions):
-        """Set subscriptions associated with this account."""
-        self._index.content['subscriptions'] = list(set(subscriptions))
-        self._update_index_doc()
-
-    subscriptions = property(
-        _get_subscriptions, _set_subscriptions, doc="Account subscriptions.")
-
-    def addSubscription(self, name):
-        """add a subscription to the subscriptions list."""
-        name = name.upper()
-        self.subscriptions.append(name)
-        self._update_index_doc()
-
-    def removeSubscription(self, name):
-        """
-        Remove a subscription from the subscriptions list.
-        """
-        self.subscriptions.remove(name)
-        self._update_index_doc()
-
-    # ------------------------------------------------------
-    # flags and status are separate fields now,
-    # but should move to mailbox dict
-
-    #
-    # flags
-    #
-    def _get_flags(self):
-        """Get flags from index for the account."""
-        return self._index.content.setdefault('flags', {})
-
-    def _set_flags(self, flags):
-        """Set flags dict in the index for the account."""
-        self._index.content['flags'] = flags
-        self._update_index_doc()
-
-    _flags = property(
-        _get_flags, _set_flags, doc="Mailboxes flags.")
-
-    #
-    # status
-    #
-
-    # XXX move to mailbox dict ...
-
-    def _get_mailbox_status(self):
-        """Get status from index for the account."""
-        return self._index.content.setdefault('status', {})
-
-    def _set_mailbox_status(self, value):
-        """Set status dict in the index for the account."""
-        self._index.content['status'] = value
-        self._update_index_doc()
-
-    _mailbox_status = property(
-        _get_mailbox_status, _set_mailbox_status, doc="Mailbox status.")
-
-'''
-
 #######################################
 # Soledad Account
 #######################################
@@ -317,8 +101,10 @@ class SoledadBackedAccount(IndexedDB):
         TYPE_IDX: ['type'],
         TYPE_MBOX_IDX: ['type', 'mbox'],
         TYPE_MBOX_UID_IDX: ['type', 'mbox', 'uid'],
+
         # mailboxes
         TYPE_SUBS_IDX: ['type', 'bool(subscribed)'],
+
         # messages
         TYPE_MBOX_SEEN_IDX: ['type', 'mbox', 'bool(seen)'],
         TYPE_MBOX_RECT_IDX: ['type', 'mbox', 'bool(recent)'],
