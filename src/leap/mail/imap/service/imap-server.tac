@@ -1,6 +1,9 @@
+import ConfigParser
 import datetime
 import os
 from functools import partial
+
+from xdg import BaseDirectory
 
 from twisted.application import internet, service
 from twisted.internet.protocol import ServerFactory
@@ -9,8 +12,9 @@ from twisted.python import log
 
 from leap.common.check import leap_assert
 from leap.mail.imap.server import SoledadBackedAccount
+from leap.mail.imap.fetch import LeapIncomingMail
 from leap.soledad import Soledad
-from leap.soledad import SoledadCrypto
+#from leap.soledad import SoledadCrypto
 
 # Some constants
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -38,10 +42,10 @@ class LeapIMAPServer(imap4.IMAP4Server):
         # initialize imap server!
         imap4.IMAP4Server.__init__(self, *args, **kwargs)
 
-	# we should initialize the account here,
-	# but we move it to the factory so we can
-	# populate the test account properly (and only once
-	# per session)
+        # we should initialize the account here,
+        # but we move it to the factory so we can
+        # populate the test account properly (and only once
+        # per session)
 
         # theAccount = SoledadBackedAccount(
         #     user, soledad=soledad)
@@ -87,7 +91,7 @@ class LeapIMAPFactory(ServerFactory):
 
         # ---------------------------------
         # XXX pre-populate acct for tests!!
-        populate_test_account(theAccount)
+        # populate_test_account(theAccount)
         # ---------------------------------
         self.theAccount = theAccount
 
@@ -112,42 +116,47 @@ class LeapIMAPFactory(ServerFactory):
 #from leap.soledad.util import GPGWrapper
 
 
-def initialize_soledad(uuid, passphrase, tempdir):
+def initialize_mailbox_soledad(user_uuid, soledad_pass, server_url,
+                       	       server_pemfile, token):
     """
     Initializes soledad by hand
 
-    @param uuid: uuid for the user
-    @param passphrase: ...
-    @param tempdir: path to temporal dir
-    @rtype: Soledad instance
+    :param user_uuid:
+    :param soledad_pass:
+    :param server_url:
+    :param server_pemfile:
+    :param token:
+
+    :rtype: Soledad instance
     """
-    uuid = "foobar-uuid"
-    passphrase = "verysecretpassphrase"
-    secret_path = os.path.join(tempdir, "secret.gpg")
-    local_db_path = os.path.join(tempdir, "soledad.u1db")
-    server_url = "http://provider"
-    cert_file = ""
+    #XXX do we need a separate instance for the mailbox db?
+
+    base_config = BaseDirectory.xdg_config_home
+    secret_path = os.path.join(
+        base_config, "leap", "soledad", "%s.secret" % user_uuid)
+    soledad_path = os.path.join(
+        base_config, "leap", "soledad", "%s-mailbox.db" % user_uuid)
+
 
     _soledad = Soledad(
-        uuid,  # user's uuid, obtained through signal events
-        passphrase,  # how to get this?
-        secret_path,  # how to get this?
-        local_db_path,  # how to get this?
-        server_url,  # can be None for now
-        cert_file,
-        bootstrap=False)
-    _soledad._init_dirs()
-    _soledad._crypto = SoledadCrypto(_soledad)
-    _soledad._shared_db = None
-    _soledad._init_keys()
-    _soledad._init_db()
+        user_uuid,
+	soledad_pass,
+        secret_path,
+        soledad_path,
+	server_url,
+        server_pemfile,
+        token,
+        bootstrap=True)
+    #_soledad._init_dirs()
+    #_soledad._crypto = SoledadCrypto(_soledad)
+    #_soledad._shared_db = None
+    #_soledad._init_keys()
+    #_soledad._init_db()
 
     return _soledad
 
-
+'''
 mail_sample = open('rfc822.message').read()
-
-
 def populate_test_account(acct):
     """
     Populates inbox for testing purposes
@@ -155,31 +164,49 @@ def populate_test_account(acct):
     print "populating test account!"
     inbox = acct.getMailbox('inbox')
     inbox.addMessage(mail_sample, ("\\Foo", "\\Recent",), date="Right now2")
+'''
 
-
-def incoming_check(acct):
+def incoming_check(fetcher):
     """
     Check incoming queue. To be called periodically.
     """
-    # FIXME -------------------------------------
-    # XXX should instantiate LeapIncomingMail
-    # properly, and just call its `fetch` method...
-    # --------------------------------------------
-
-    log.msg("checking incoming queue...")
-
-    inbox = acct.getMailbox('inbox')
-    ts = datetime.datetime.ctime(datetime.datetime.utcnow())
-    inbox.addMessage("test!", ("\\Foo", "\\Recent", ), date=ts)
+    #log.msg("checking incoming queue...")
+    fetcher.fetch()
 
 
-userID = 'user@leap.se'  # TODO: get real USER from configs...
+#######################################################################
+# XXX STUBBED! We need to get this in the instantiation from the client
 
-# This initialization form is failing:
-#soledad = Soledad(userID)
+config = ConfigParser.ConfigParser()
+config.read([os.path.expanduser('~/.config/leap/mail/mail.conf')])
 
-soledad = initialize_soledad(userID, '/tmp', '/tmp')
+userID = config.get('mail', 'address')
+privkey = open(os.path.expanduser('~/.config/leap/mail/privkey')).read()
+nickserver_url = ""
+
+d = {}
+
+for key in ('uid', 'passphrase', 'server', 'pemfile', 'token'):
+    d[key] = config.get('mail', key)
+
+soledad = initialize_mailbox_soledad(
+    d['uid'],
+    d['passphrase'],
+    d['server'],
+    d['pemfile'],
+    d['token'])
 gpg = None
+
+# import the private key ---- should sync it from remote!
+from leap.common.keymanager.openpgp import OpenPGPScheme
+opgp = OpenPGPScheme(soledad)
+opgp.put_ascii_key(privkey)
+
+from leap.common.keymanager import KeyManager
+keym = KeyManager(userID, nickserver_url, soledad, d['token'])
+
+#import ipdb; ipdb.set_trace()
+
 
 factory = LeapIMAPFactory(userID, soledad, gpg)
 
@@ -187,5 +214,17 @@ application = service.Application("LEAP IMAP4 Local Service")
 imapService = internet.TCPServer(IMAP_PORT, factory)
 imapService.setServiceParent(application)
 
-incoming_check_for_acct = partial(incoming_check, factory.theAccount)
-internet.TimerService(INCOMING_CHECK_PERIOD, incoming_check_for_acct).setServiceParent(application)
+fetcher = LeapIncomingMail(
+    keym,
+    d['uid'],
+    d['passphrase'],
+    d['server'],
+    d['pemfile'],
+    d['token'],
+    factory.theAccount)
+
+
+incoming_check_for_acct = partial(incoming_check, fetcher)
+internet.TimerService(
+    INCOMING_CHECK_PERIOD,
+    incoming_check_for_acct).setServiceParent(application)
