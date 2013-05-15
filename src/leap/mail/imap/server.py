@@ -23,10 +23,13 @@ import StringIO
 import cStringIO
 import time
 
+from email.parser import Parser
+
 from zope.interface import implements
 
 from twisted.mail import imap4
 from twisted.internet import defer
+from twisted.python import log
 
 #from twisted import cred
 
@@ -484,6 +487,9 @@ class LeapMessage(object):
 
         @rtype: C{int}
         """
+        if not self._doc:
+            log.msg('BUG!!! ---- message has no doc!')
+            return
         return self._doc.content['uid']
 
     def getFlags(self):
@@ -493,10 +499,55 @@ class LeapMessage(object):
         @rtype: C{iterable}
         @return: The flags, represented as strings
         """
+        if self._doc is None:
+            return []
         flags = self._doc.content.get('flags', None)
         if flags:
             flags = map(str, flags)
         return flags
+
+    # setFlags, addFlags, removeFlags are not in the interface spec
+    # but we use them with store command.
+
+    def setFlags(self, flags):
+        """
+        Sets the flags for this message
+
+        Returns a LeapDocument that needs to be updated by the caller.
+
+        @type flags: sequence of C{str}
+        @rtype: LeapDocument
+        """
+        log.msg('setting flags')
+        doc = self._doc
+        doc.content['flags'] = flags
+        doc.content['seen'] = "\\Seen" in flags
+        doc.content['recent'] = "\\Recent" in flags
+        return self._doc
+
+    def addFlags(self, flags):
+        """
+        Adds flags to this message
+
+        Returns a document that needs to be updated by the caller.
+
+        @type flags: sequence of C{str}
+        @rtype: LeapDocument
+        """
+        oldflags = self.getFlags()
+        return self.setFlags(list(set(flags + oldflags)))
+
+    def removeFlags(self, flags):
+        """
+        Remove flags from this message.
+
+        Returns a document that needs to be updated by the caller.
+
+        @type flags: sequence of C{str}
+        @rtype: LeapDocument
+        """
+        oldflags = self.getFlags()
+        return self.setFlags(list(set(oldflags) - set(flags)))
 
     def getInternalDate(self):
         """
@@ -557,10 +608,34 @@ class LeapMessage(object):
         """
         return self.getBodyFile().len
 
-    def getHeaders(negate, *names):
-        # XXX implement headers
-        # as separate fields in the LeapDoc
-        return {}
+    def _get_headers(self):
+        """
+        Return the headers dict stored in this message document
+        """
+        return self._doc.content['headers']
+
+    def getHeaders(self, negate, *names):
+        """
+        Retrieve a group of message headers.
+
+        @type names: C{tuple} of C{str}
+        @param names: The names of the headers to retrieve or omit.
+
+        @type negate: C{bool}
+        @param negate: If True, indicates that the headers listed in C{names}
+        should be omitted from the return value, rather than included.
+
+        @rtype: C{dict}
+        @return: A mapping of header field names to header field values
+        """
+        headers = self._get_headers()
+        if negate:
+            cond = lambda key: key.upper() not in names
+        else:
+            cond = lambda key: key.upper() in names
+        return dict(
+            [map(str, (key, val)) for key, val in headers.items()
+             if cond(key)])
 
     # --- no multipart for now
 
@@ -590,6 +665,7 @@ class MessageCollection(object):
         "seen": False,
         "recent": True,
         "flags": [],
+        "headers": {},
         "raw": "",
     }
 
@@ -617,6 +693,7 @@ class MessageCollection(object):
 
         self.mbox = mbox.upper()
         self.db = db
+        self._parser = Parser()
 
     def _get_empty_msg(self):
         """
@@ -658,15 +735,27 @@ class MessageCollection(object):
         content = self._get_empty_msg()
         content['mbox'] = self.mbox
 
-        if subject:
-            content['subject'] = stringify(subject)
         if flags:
             content['flags'] = map(stringify, flags)
             content['seen'] = "\\Seen" in flags
-        # XXX if not subject, extract it from raw...
-        # XXX extract other headers to do searches...
+
+        def _get_parser_fun(o):
+            if isinstance(o, (cStringIO.OutputType, StringIO.StringIO)):
+                return self._parser.parse
+            if isinstance(o, (str, unicode)):
+                return self._parser.parsestr
+
+        msg = _get_parser_fun(raw)(raw, True)
+        headers = dict(msg)
+
+        # XXX get lower case for keys?
+        content['headers'] = headers
+        content['subject'] = headers['Subject']
         content['raw'] = stringify(raw)
-        content['date'] = date
+
+        if not date:
+            content['date'] = headers['Date']
+
         # ...should get a sanity check here.
         content['uid'] = uid
 
@@ -689,6 +778,14 @@ class MessageCollection(object):
         docs = self.db.get_from_index(
             SoledadBackedAccount.TYPE_MBOX_UID_IDX, 'msg', self.mbox, str(uid))
         return docs[0] if docs else None
+
+    def get_msg_by_uid(self, uid):
+        """
+        Retrieves a LeapMessage by UID
+        """
+        doc = self.get_by_uid(uid)
+        if doc:
+            return LeapMessage(doc)
 
     def get_all(self):
         """
@@ -774,17 +871,9 @@ class MessageCollection(object):
         @type key: C{int}
         @param key: an integer index
         """
-        # XXX this should return LeapMessage instances
         try:
-            # this would work for sequence, but let's
-            # try to keep it simple with mailbox uid instead
-            #msg_doc = self.get_all()[key]
-            msg_doc = self.get_by_uid(uid)
+            return self.get_msg_by_uid(uid)
         except IndexError:
-            return None
-        if msg_doc:
-            return msg_doc.content
-        else:
             return None
 
     def __repr__(self):
@@ -904,20 +993,14 @@ class SoledadMailbox(object):
         mbox = self._get_mbox()
         return mbox.content.get('created', 1)
 
-    # TODO --------------------------------------------------
-
     def getUID(self, message):
         """
         Return the UID of a message in the mailbox
 
         @rtype: C{int}
         """
-        # XXX what is this used for?
-        # XXX what type is message?
-        # until now, not needed in the test suite...
-        return 0
-
-    # XXX ----------------------  ^^^ -----------------------
+        msg = self.messages.get_msg_by_uid(message)
+        return msg.getUID()
 
     def getRecentCount(self):
         """
@@ -995,6 +1078,7 @@ class SoledadMailbox(object):
         # XXX we should treat the message as an IMessage from here
         uid_next = self.getUIDNext()
         flags = tuple(str(flag) for flag in flags)
+
         self.messages.add_msg(message, flags=flags, date=date,
                               uid=uid_next)
         return defer.succeed(None)
@@ -1019,8 +1103,8 @@ class SoledadMailbox(object):
         """
         Remove all messages flagged \\Deleted
         """
-        # XXX if this is not open for R-W, this
-        # should raise ReadOnlyMailbox
+        if not self.isWriteable():
+            raise imap4.ReadOnlyMailbox
 
         delete = []
         deleted = []
@@ -1052,29 +1136,67 @@ class SoledadMailbox(object):
         @rtype: A tuple of two-tuples of message sequence numbers and
         C{LeapMessage}
         """
+        # XXX implement sequence numbers (uid = 0)
         result = []
-        if not uid:
-            for last, first in messages.ranges:
-                if not last:
-                    last = self.messages.count()
-                for _id in range(first, last):
-                    msg_doc = self.messages.get_by_uid(_id)
-                    msg = LeapMessage(msg_doc)
-                    result.append((_id, msg))
-        else:
-            for _, msgid in messages.ranges:
-                msg_doc = self.messages.get_by_uid(msgid)
-                msg = LeapMessage(msg_doc)
-                result.append((msgid, msg))
+
+        if not messages.last:
+            messages.last = self.messages.count()
+
+        for msg_id in messages:
+            msg = self.messages.get_msg_by_uid(msg_id)
+            if msg:
+                result.append((msg_id, msg))
         return tuple(result)
 
-    def store(messages, flags, mode, uid):
+    def store(self, messages, flags, mode, uid):
         """
         Sets the flags of one or more messages.
+
+        @type messages: A MessageSet object with the list of messages requested
+        @param messages: The identifiers of the messages to set the flags
+
+        @type flags: sequence of {str}
+        @param flags: The flags to set, unset, or  add.
+
+        @type mode: -1, 0, or 1
+        @param mode: If mode is -1, these flags should be removed from the
+        specified messages.  If mode is 1, these flags should be added to
+        the specified messages.  If mode is 0, all existing flags should be
+        cleared and these flags should be added.
+
+        @type uid: C{bool}
+        @param uid: If true, the IDs specified in the query are UIDs;
+        otherwise they are message sequence IDs.
+
+        @rtype: C{dict}
+        @return: A C{dict} mapping message sequence numbers to sequences of
+        C{str}
+        representing the flags set on the message after this operation has
+        been performed, or a C{Deferred} whose callback will be invoked with
+        such a dict
+
+        @raise ReadOnlyMailbox: Raised if this mailbox is not open for
+        read-write.
         """
-        # XXX implement-me
-        print "Not implemented!"
-        raise NotImplemented("Store method not implemented")
+        # XXX implement also sequence (uid = 0)
+        if not self.isWriteable():
+            raise imap4.ReadOnlyMailbox
+
+        if not messages.last:
+            messages.last = self.messages.count()
+
+        result = {}
+        for msg_id in messages:
+            msg = self.messages.get_msg_by_uid(msg_id)
+            if mode == 1:
+                self._update(msg.addFlags(flags))
+            elif mode == -1:
+                self._update(msg.removeFlags(flags))
+            elif mode == 0:
+                self._update(msg.setFlags(flags))
+            result[msg_id] = msg.getFlags()
+
+        return result
 
     def close(self):
         """
@@ -1092,6 +1214,13 @@ class SoledadMailbox(object):
         docs = self.messages.get_all()
         for doc in docs:
             self.messages.db.delete_doc(doc)
+
+    def _update(self, doc):
+        """
+        Updates document in u1db database
+        """
+        #log.msg('updating doc... %s ' % doc)
+        self._db.put_doc(doc)
 
     def __repr__(self):
         return u"<SoledadMailbox: mbox '%s' (%s)>" % (

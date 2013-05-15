@@ -78,7 +78,6 @@ class LeapIncomingMail(object):
         Get new mail by syncing database, store it in the INBOX for the
         user account, and remove from the incoming db.
         """
-        #log.msg('syncing soledad db')
         self._soledad.sync()
 
         #log.msg('getting all docs')
