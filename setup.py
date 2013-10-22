@@ -66,6 +66,7 @@ setup(
     packages=find_packages('src'),
     test_suite='leap.mail.load_tests',
     install_requires=utils.parse_requirements(),
+    zip_safe=False,
     tests_require=utils.parse_requirements(
         reqfiles=['pkg/requirements-testing.pip']),
 )

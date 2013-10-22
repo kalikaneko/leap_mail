@@ -710,7 +710,9 @@ class LeapMessage(WithMsgFields):
             em = email.message_from_string(content.encode("utf-8"))
             # Miniparser for: Content-Type: <something>; charset=<charset>
             charset_re = r'''charset=(?P<charset>[\w|\d|-]*)'''
-            charset = re.findall(charset_re, em["Content-Type"])[0]
+            match = re.findall(charset_re, em["Content-Type"])[0]
+            if match != "":
+                charset = match
         except Exception:
             pass
         return charset
