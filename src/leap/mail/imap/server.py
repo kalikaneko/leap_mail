@@ -985,9 +985,11 @@ class MessageCollection(WithMsgFields, IndexedDB):
         # ...should get a sanity check here.
         content[self.UID_KEY] = uid
 
-        self._soledad_writer.put(content)
+        # the writer does not behaves timely, need to remove
+        # the polling mechanism.
+        #self._soledad_writer.put(content)
         # XXX have to decide what shall we do with errors with this change...
-        #return self._soledad.create_doc(content)
+        return self._soledad.create_doc(content)
 
     def remove(self, msg):
         """
