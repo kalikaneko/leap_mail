@@ -323,3 +323,14 @@ def run_service(*args, **kwargs):
 
     # not ok, signal error.
     leap_events.signal(IMAP_SERVICE_FAILED_TO_START, str(port))
+
+    def checkpoint(self):
+        """
+        Called when the client issues a CHECK command.
+
+        This should perform any checkpoint operations required by the server.
+        It may be a long running operation, but may not block.  If it returns
+        a deferred, the client will only be informed of success (or failure)
+        when the deferred's callback (or errback) is invoked.
+        """
+        return None

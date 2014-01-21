@@ -17,6 +17,7 @@
 """
 Soledad Mailbox.
 """
+import contextlib
 import copy
 import threading
 import logging
@@ -41,6 +42,11 @@ from leap.mail.imap.messages import MessageCollection
 from leap.mail.imap.parser import MBoxParser
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def operation_checkpoint(foo):
+    pass
 
 
 class SoledadMailbox(WithMsgFields, MBoxParser):
