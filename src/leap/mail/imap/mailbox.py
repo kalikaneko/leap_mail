@@ -44,11 +44,6 @@ from leap.mail.imap.parser import MBoxParser
 logger = logging.getLogger(__name__)
 
 
-@contextlib.contextmanager
-def operation_checkpoint(foo):
-    pass
-
-
 class SoledadMailbox(WithMsgFields, MBoxParser):
     """
     A Soledad-backed IMAP mailbox.
@@ -86,7 +81,7 @@ class SoledadMailbox(WithMsgFields, MBoxParser):
 
     next_uid_lock = threading.Lock()
 
-    def __init__(self, mbox, soledad=None, rw=1):
+    def __init__(self, mbox, soledad, memstore, rw=1):
         """
         SoledadMailbox constructor. Needs to get passed a name, plus a
         Soledad instance.
@@ -97,9 +92,13 @@ class SoledadMailbox(WithMsgFields, MBoxParser):
         :param soledad: a Soledad instance.
         :type soledad: Soledad
 
-        :param rw: read-and-write flags
+        :param memstore: a MemoryStore instance
+        :type memstore: MemoryStore
+
+        :param rw: read-and-write flag for this mailbox
         :type rw: int
         """
+        print "got memstore: ", memstore
         leap_assert(mbox, "Need a mailbox name to initialize")
         leap_assert(soledad, "Need a soledad instance to initialize")
 
@@ -111,9 +110,10 @@ class SoledadMailbox(WithMsgFields, MBoxParser):
         self.rw = rw
 
         self._soledad = soledad
+        self._memstore = memstore
 
         self.messages = MessageCollection(
-            mbox=mbox, soledad=self._soledad)
+            mbox=mbox, soledad=self._soledad, memstore=self._memstore)
 
         if not self.getFlags():
             self.setFlags(self.INIT_FLAGS)

@@ -19,10 +19,15 @@ In-memory transient store for a LEAPIMAPServer.
 """
 import contextlib
 import logging
+import weakref
 
-from zope.interface import Interface, implements
+from collections import namedtuple
+
+from zope.interface import implements
 
 from leap.mail import size
+from leap.mail.imap import interfaces
+from leap.mail.imap import fields
 
 logger = logging.getLogger(__name__)
 
@@ -41,95 +46,45 @@ def set_bool_flag(obj, att):
     finally:
         setattr(obj, att, False)
 
-# Interfaces
 
-
-class IMessageContainer(Interface):
+class ReferenciableDict(dict):
     """
-    I am a container around the different documents that a message
-    is split into.
-    """
+    A dict that can be weak-referenced.
 
-    @property
-    def fdoc(self):
-        """
-        Return the flags document for this message.
+    Some builtin objects are not weak-referenciable unless
+    subclassed. So we do.
 
-        :rtype: dict
-        """
-
-    @property
-    def hdoc(self):
-        """
-        Return the headers document for this message.
-
-        :rtype: dict
-        """
-
-    @property
-    def cdocs(self):
-        """
-        Return the content docs for this message.
-
-        :return: a list of dicts, or empty list.
-        :rtype: list
-        """
-
-    def all_docs_iter(self):
-        """
-        Return an iterator to the docs for all the parts.
-
-        :rtype: iterator
-        """
-
-
-class IMessageStore(Interface):
-    """
-    I represent a generic storage for LEAP Messages.
+    Used to return pointers to the items in the MemoryStore.
     """
 
-    def put(self, mbox, uid, message):
-        """
-        Put the passed message into this IMessageStore.
 
-        :param mbox: the mbox this message belongs.
-        :param uid: the UID that identifies this message in this mailbox.
-        :param message: a IMessageContainer implementor.
-        """
+class ReferenciableList(list):
+    """
+    ibidem.
+    """
 
-    def get(self, mbox, uid):
-        """
-        Get a IMessageContainer for the given mbox and uid combination.
-
-        :param mbox: the mbox this message belongs.
-        :param uid: the UID that identifies this message in this mailbox.
-        """
-
-    def write(self, store):
-        """
-        Write the documents in this IMessageStore to a different
-        storage. Usually this will be done from a MemoryStorage to a DbStorage.
-
-        :param store: another IMessageStore implementor.
-        """
-
-#
-# Implementors
-#
+MessagePartTuple = namedtuple(
+    'MessagePartTuple', ['new', 'dirty', 'store', 'content'])
 
 
 class MessageDict(object):
     """
     A simple dictionary container around the different message subparts.
     """
-    implements(IMessageContainer)
+    # TODO use __slots__ to limit memory footprint?
+
+    implements(interfaces.IMessageContainer)
 
     FDOC = "fdoc"
     HDOC = "hdoc"
     CDOCS = "cdocs"
 
-    def __init__(self, from_dict, fdoc=None, hdoc=None, cdocs=None):
+    def __init__(self, from_dict, fdoc=None, hdoc=None, cdocs=None,
+                 new=False, dirty=False):
         self._dict = {}
+        self.new = new
+        # XXX add set_dirty method
+        self.dirty = dirty
 
         if from_dict is not None:
             self.from_dict(from_dict)
@@ -145,16 +100,27 @@ class MessageDict(object):
 
     @property
     def fdoc(self):
-        return self._dict.get(self.FDOC, {})
+        content_ref = weakref.ref(
+            self._dict.get(self.FDOC, ReferenciableDict()))
+        return MessagePartTuple(new=self.new, dirty=self.dirty, store="mem",
+                                content=content_ref)
 
     @property
     def hdoc(self):
-        return self._dict.get(self.HDOC, {})
+        content_ref = weakref.ref(
+            self._dict.get(self.HDOC, ReferenciableDict()))
+        return MessagePartTuple(new=self.new, dirty=self.dirty, store="mem",
+                                content=content_ref)
 
+    # XXX check interface for this.
+    # Should return a dict Zero-indexed with content docs.
     @property
     def cdocs(self):
-        cdocs_dict = self._dict.get(self.CDOCS, {})
-        return cdocs_dict.values()
+        _cdocs = self._dict.get(self.CDOCS, None)
+        if _cdocs:
+            return weakref.ref(_cdocs)
+        else:
+            return {}
 
     def all_docs_iter(self):
         return self._dict.itervalues()
@@ -169,7 +135,7 @@ class MessageDict(object):
 
     def from_dict(self, msg_dict):
         """
-        Populate parts from a dictionary.
+        Populate MessageDict parts from a dictionary.
         It expects the same format that we use in a
         MessageDict.
         """
@@ -190,10 +156,14 @@ class MemoryStore(object):
     It uses MessageDicts to store the message-parts, which are indexed
     by mailbox name and UID.
     """
-    implements(IMessageStore)
+    implements(interfaces.IMessageStore)
 
     # TODO We will want to index by chash when we transition to local-only
     # UIDs.
+    # TODO should store RECENT-FLAGS too
+    # TODO should store HDOCSET too (use weakrefs!) -- will need to subclass
+    # TODO use dirty flag (maybe use namedtuples for that) so we can use it
+    # also as a read-cache.
 
     WRITING_FLAG = "_writing"
 
@@ -201,17 +171,32 @@ class MemoryStore(object):
         """
         Initialize a MemoryStore.
         """
-        self._store = {}
+        self._msg_store = {}
+        self._phash_store = {}
+
+        self._new = set([])
+        self._dirty = set([])
         setattr(self, self.WRITING_FLAG, False)
 
     # IMessageStore
+
+    # XXX change interface to put_msg etc??
 
     def put(self, mbox, uid, message):
         """
         Put the passed message into this MemoryStore.
         """
+        print "putting doc %s (%s)" % (mbox, uid)
         key = mbox, uid
-        self._store[key] = message.as_dict()
+        self._msg_store[key] = message.as_dict()
+
+        cdocs = message.cdocs
+        for cdoc_key in cdocs:
+            cdoc = cdocs[cdoc_key]
+            phash = cdoc.get(fields.PAYLOAD_HASH_KEY, None)
+            if not phash:
+                continue
+            self._phash_store[phash] = weakref.ref(cdoc)
 
     def get(self, mbox, uid):
         """
@@ -220,11 +205,15 @@ class MemoryStore(object):
         :return: MessageDict or None
         """
         key = mbox, uid
-        msg_dict = self._store.get(key, None)
+        msg_dict = self._msg_store.get(key, None)
         if msg_dict:
+            # XXX check if msg in new, dirty !
             return MessageDict(msg_dict)
         else:
             return None
+
+    # XXX add write_msgs, write_rflags etc?
+    # or do everything at once?
 
     def write(self, store):
         """
@@ -232,13 +221,24 @@ class MemoryStore(object):
         """
         raise NotImplementedError("ouch!")
 
-        # XXX store should implement a IMessageStore
+        # XXX should check for elements with the dirty state
+        # XXX if new == True, create_doc
+        # XXX if new == False, put_doc
+        # XXX should delete the original message from incoming after
+        # the writes are done.
+
+        # XXX store should implement a IMessageStore too. assert.
         with set_bool_flag(self, self.WRITING_FLAG):
             # XXX do stuff ...........................
             # for foo in bar: store.write
             pass
 
     # MemoryStore specific methods.
+    def get_by_phash(self, phash):
+        """
+        Return a content-document by its payload-hash.
+        """
+        return self._phash_store.get(phash, None)
 
     @property
     def is_writing(self):
@@ -269,4 +269,4 @@ class MemoryStore(object):
         Return the size of the internal storage.
         Use for calculating the limit beyond which we should flush the store.
         """
-        return size.get_size(self._store)
+        return size.get_size(self._msg_store)

@@ -36,6 +36,7 @@ from leap.common.check import leap_assert, leap_assert_type, leap_check
 from leap.keymanager import KeyManager
 from leap.mail.imap.account import SoledadBackedAccount
 from leap.mail.imap.fetch import LeapIncomingMail
+from leap.mail.imap.memorystore import MemoryStore
 from leap.soledad.client import Soledad
 
 # The default port in which imap service will run
@@ -68,6 +69,8 @@ except Exception:
 
 ######################################################
 
+
+# TODO move this to imap.server
 
 class LeapIMAPServer(imap4.IMAP4Server):
     """
@@ -256,10 +259,14 @@ class LeapIMAPFactory(ServerFactory):
         self._uuid = uuid
         self._userid = userid
         self._soledad = soledad
+        self._memstore = MemoryStore()
 
         theAccount = SoledadBackedAccount(
-            uuid, soledad=soledad)
+            uuid, soledad=soledad,
+            memstore=self._memstore)
         self.theAccount = theAccount
+
+        # XXX how to pass the store along?
 
     def buildProtocol(self, addr):
         "Return a protocol suitable for the job."
