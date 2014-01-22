@@ -107,6 +107,9 @@ def walk_msg_tree(parts, body_phash=None):
                        in the outer content doc for convenience.
     :type body_phash: basestring or None
     """
+    import pprint
+    pprint.pprint(parts)
+
     # parts vector
     pv = list(get_parts_vector(parts))
 
@@ -143,6 +146,15 @@ def walk_msg_tree(parts, body_phash=None):
         pv = list(get_parts_vector(parts))
         wv = getwv(pv)
 
+    # XXX generalize for this case with n elements
+    if pv == [1, 1, 1]:
+        # special case in the rightmost element
+        main_pmap = parts[0]['part_map']
+        last_part = max(main_pmap.keys())
+        main_pmap[last_part]['part_map'] = {}
+        main_pmap[last_part]['part_map'][0] = parts[1]
+        main_pmap[last_part]['part_map'][1] = parts[2]
+
     outer = parts[0]
     outer.pop('headers')
     if not "part_map" in outer:
@@ -157,6 +169,7 @@ def walk_msg_tree(parts, body_phash=None):
         if inner_headers:
             pdoc["part_map"][1]["headers"] = inner_headers
     else:
+        print "everything goood, pdoc is OUTER"
         pdoc = outer
     pdoc["body"] = body_phash
     return pdoc

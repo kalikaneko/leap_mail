@@ -33,7 +33,8 @@ p = parser.Parser()
 
 #msg = p.parse(open('rfc822.multi-signed.message'))
 #msg = p.parse(open('rfc822.plain.message'))
-msg = p.parse(open('rfc822.multi-minimal.message'))
+#msg = p.parse(open('rfc822.multi-minimal.message'))
+msg = p.parse(open('rfc822.multi-apple.message'))
 DO_CHECK = False
 #################################################
 
