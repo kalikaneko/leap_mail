@@ -27,7 +27,7 @@ from zope.interface import implements
 
 from leap.mail import size
 from leap.mail.imap import interfaces
-from leap.mail.imap import fields
+from leap.mail.imap.fields import fields
 
 logger = logging.getLogger(__name__)
 
@@ -79,36 +79,48 @@ class MessageDict(object):
     HDOC = "hdoc"
     CDOCS = "cdocs"
 
-    def __init__(self, from_dict, fdoc=None, hdoc=None, cdocs=None,
-                 new=False, dirty=False):
+    def __init__(self, fdoc=None, hdoc=None, cdocs=None,
+                 from_dict=None, memstore=None,
+                 new=True, dirty=False):
         self._dict = {}
         self.new = new
         # XXX add set_dirty method
         self.dirty = dirty
+        self.memstore = memstore
 
         if from_dict is not None:
             self.from_dict(from_dict)
         else:
             if fdoc is not None:
-                self._dict[self.FDOC] = fdoc
+                self._dict[self.FDOC] = ReferenciableDict(fdoc)
             if hdoc is not None:
-                self._dict[self.HDOC] = hdoc
+                self._dict[self.HDOC] = ReferenciableDict(hdoc)
             if cdocs is not None:
-                self._dict[self.CDOCS] = cdocs
+                self._dict[self.CDOCS] = ReferenciableDict(cdocs)
 
     # IMessageContainer
 
     @property
     def fdoc(self):
-        content_ref = weakref.ref(
-            self._dict.get(self.FDOC, ReferenciableDict()))
+        _fdoc = self._dict.get(self.FDOC, None)
+        if _fdoc:
+            content_ref = weakref.proxy(_fdoc)
+        else:
+            print "NO FDOC!!!"
+            print "_dict:", self._dict
+            content_ref = {}
         return MessagePartTuple(new=self.new, dirty=self.dirty, store="mem",
                                 content=content_ref)
 
     @property
     def hdoc(self):
-        content_ref = weakref.ref(
-            self._dict.get(self.HDOC, ReferenciableDict()))
+        _hdoc = self._dict.get(self.HDOC, None)
+        if _hdoc:
+            content_ref = weakref.proxy(_hdoc)
+        else:
+            print "NO HDOC!!!!"
+            print "_dict:", self._dict
+            content_ref = {}
         return MessagePartTuple(new=self.new, dirty=self.dirty, store="mem",
                                 content=content_ref)
 
@@ -118,7 +130,7 @@ class MessageDict(object):
     def cdocs(self):
         _cdocs = self._dict.get(self.CDOCS, None)
         if _cdocs:
-            return weakref.ref(_cdocs)
+            return weakref.proxy(_cdocs)
         else:
             return {}
 
@@ -188,15 +200,36 @@ class MemoryStore(object):
         """
         print "putting doc %s (%s)" % (mbox, uid)
         key = mbox, uid
-        self._msg_store[key] = message.as_dict()
+        self._new.add(key)
+        msg_dict = message.as_dict()
+
+        self._msg_store[key] = msg_dict
 
         cdocs = message.cdocs
-        for cdoc_key in cdocs:
-            cdoc = cdocs[cdoc_key]
+        #import ipdb; ipdb.set_trace()
+
+        dirty = True
+        new = True
+
+        # XXX should capture this in log...
+
+        for cdoc_key in cdocs.keys():
+            print "saving cdoc"
+            cdoc = self._msg_store[key]['cdocs'][cdoc_key]
+            #import ipdb; ipdb.set_trace()
+
+            # make it weak-referenciable!
+            referenciable_cdoc = ReferenciableDict(cdoc)
+            # XXX get new attr???
+            self._msg_store[key]['cdocs'][cdoc_key] = MessagePartTuple(
+                new=new, dirty=dirty, store="mem",
+                content=referenciable_cdoc)
+            print "cdoc ----", cdoc
             phash = cdoc.get(fields.PAYLOAD_HASH_KEY, None)
+
             if not phash:
                 continue
-            self._phash_store[phash] = weakref.ref(cdoc)
+            self._phash_store[phash] = weakref.proxy(referenciable_cdoc)
 
     def get(self, mbox, uid):
         """
@@ -208,7 +241,8 @@ class MemoryStore(object):
         msg_dict = self._msg_store.get(key, None)
         if msg_dict:
             # XXX check if msg in new, dirty !
-            return MessageDict(msg_dict)
+            return MessageDict(from_dict=msg_dict,
+                               memstore=weakref.proxy(self))
         else:
             return None
 
@@ -234,11 +268,46 @@ class MemoryStore(object):
             pass
 
     # MemoryStore specific methods.
+
+    def get_uids(self, mbox):
+        """
+        Get all uids for a given mbox.
+        """
+        all_keys = self._msg_store.keys()
+        return [uid for m, uid in all_keys if m == mbox]
+
+    def get_last_uid(self, mbox):
+        """
+        Get the highest UID for a given mbox.
+        """
+        # XXX should get from msg_store keys instead!
+        if not self._new:
+            return 0
+        return max([uid for m, uid in self._new if mbox == mbox])
+
+    def count_new_mbox(self, mbox):
+        """
+        Count the new messages by inbox.
+        """
+        return len([(m, uid) for m, uid in self._new if mbox == mbox])
+
+    def count_new(self):
+        """
+        Count all the new messages in the MemoryStore.
+        """
+        return len(self._new)
+
     def get_by_phash(self, phash):
         """
         Return a content-document by its payload-hash.
         """
-        return self._phash_store.get(phash, None)
+        doc = self._phash_store.get(phash, None)
+        # XXX get new, dirty properly???
+        new = True
+        dirty = True
+        return MessagePartTuple(
+            new=new, dirty=dirty, store="mem",
+            content=doc)
 
     @property
     def is_writing(self):

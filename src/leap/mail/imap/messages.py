@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 # [ ] Remove UID from syncable db. Store only those indexes locally.
 
 
+# XXX no longer needed, since i'm using proxies instead of direct weakrefs
 def maybe_call(thing):
     """
     Return the same thing, or the result of its invocation if it is a callable.
@@ -375,6 +376,7 @@ class LeapMessage(fields, MailParser, MBoxParser):
         An accessor to the flags document.
         """
         if all(map(bool, (self._uid, self._mbox))):
+            fdoc = None
             if self._container is not None:
                 fdoc = self._container.fdoc
             if not fdoc:
@@ -548,17 +550,25 @@ class LeapMessage(fields, MailParser, MBoxParser):
         # TODO refactor with getBodyFile in MessagePart
         fd = StringIO.StringIO()
         if self._bdoc is not None:
-            bdoc_content = maybe_call(self._bdoc.content)
+            bdoc_content = self._bdoc.content
             body = bdoc_content.get(self.RAW_KEY, "")
             content_type = bdoc_content.get('content-type', "")
             charset = first(CHARSET_RE.findall(content_type))
+            logger.debug('got charset from content-type: %s' % charset)
             if not charset:
                 charset = self._get_charset(body)
             try:
                 body = body.encode(charset)
             except UnicodeError as e:
                 logger.error("Unicode error {0}".format(e))
-                body = body.encode(charset, 'replace')
+                logger.debug("Attempted to encode with: %s" % charset)
+                try:
+                    body = body.encode(charset, 'replace')
+                except UnicodeError as e:
+                    try:
+                        body = body.encode('utf-8', 'replace')
+                    except:
+                        pass
 
         # We are still returning funky characters from here.
         else:
@@ -758,17 +768,21 @@ class LeapMessage(fields, MailParser, MBoxParser):
         # memstore should keep a dict with weakrefs to the
         # phash doc...
 
-        if self._memstore is not None:
-            bdoc = self._memstore.get_by_phash(body_phash)
+        if self._container is not None:
+            bdoc = self._container.memstore.get_by_phash(body_phash)
             if bdoc:
                 return bdoc
+            else:
+                print "no doc for that phash found!"
 
         # no memstore or no doc found there
-
-        body_docs = self._soledad.get_from_index(
-            fields.TYPE_P_HASH_IDX,
-            fields.TYPE_CONTENT_VAL, str(body_phash))
-        return first(body_docs)
+        if self._soledad:
+            body_docs = self._soledad.get_from_index(
+                fields.TYPE_P_HASH_IDX,
+                fields.TYPE_CONTENT_VAL, str(body_phash))
+            return first(body_docs)
+        else:
+            logger.error("No phash in container, and no soledad found!")
 
     def __getitem__(self, key):
         """
@@ -1322,6 +1336,7 @@ class MessageCollection(WithMsgFields, IndexedDB, MailParser, MBoxParser,
         # XXX review-me
         cdocs = dict((index, doc) for index, doc in
                      enumerate(walk.get_raw_docs(msg, parts)))
+        print "cdocs is", cdocs
 
         # Saving ----------------------------------------
         # XXX should check for content duplication on headers too
@@ -1586,10 +1601,14 @@ class MessageCollection(WithMsgFields, IndexedDB, MailParser, MBoxParser,
                  or None if not found.
         :rtype: LeapMessage
         """
+        print "getting msg by id!"
         msg_container = self._memstore.get(self.mbox, uid)
+        print "msg container", msg_container
         if msg_container is not None:
+            print "getting LeapMessage (from memstore)"
             msg = LeapMessage(None, uid, self.mbox, collection=self,
                               container=msg_container)
+            print "got msg:", msg
         else:
             msg = LeapMessage(self._soledad, uid, self.mbox, collection=self)
         if not msg.does_exist():
@@ -1629,11 +1648,19 @@ class MessageCollection(WithMsgFields, IndexedDB, MailParser, MBoxParser,
         ascending order.
         """
         # XXX we should get this from the uid table, local-only
-        all_uids = (doc.content[self.UID_KEY] for doc in
-                    self._soledad.get_from_index(
-                        fields.TYPE_MBOX_IDX,
-                        fields.TYPE_FLAGS_VAL, self.mbox))
-        return (u for u in sorted(all_uids))
+        # XXX FIXME -------------
+        # This should be cached in the memstoretoo
+        db_uids = set([doc.content[self.UID_KEY] for doc in
+                       self._soledad.get_from_index(
+                           fields.TYPE_MBOX_IDX,
+                           fields.TYPE_FLAGS_VAL, self.mbox)])
+        if self._memstore is not None:
+            mem_uids = self._memstore.get_uids(self.mbox)
+            uids = db_uids.union(set(mem_uids))
+        else:
+            uids = db_uids
+
+        return (u for u in sorted(uids))
 
     def reset_last_uid(self, param):
         """
@@ -1651,12 +1678,21 @@ class MessageCollection(WithMsgFields, IndexedDB, MailParser, MBoxParser,
         """
         Return a dict with all flags documents for this mailbox.
         """
+        # XXX get all from memstore and cahce it there
         all_flags = dict(((
             doc.content[self.UID_KEY],
             doc.content[self.FLAGS_KEY]) for doc in
             self._soledad.get_from_index(
                 fields.TYPE_MBOX_IDX,
                 fields.TYPE_FLAGS_VAL, self.mbox)))
+        if self._memstore is not None:
+            # XXX
+            uids = self._memstore.get_uids(self.mbox)
+            fdocs = [(uid, self._memstore.get(self.mbox, uid).fdoc)
+                     for uid in uids]
+            for uid, doc in fdocs:
+                all_flags[uid] = doc.content[self.FLAGS_KEY]
+
         return all_flags
 
     def all_flags_chash(self):
@@ -1689,9 +1725,12 @@ class MessageCollection(WithMsgFields, IndexedDB, MailParser, MBoxParser,
 
         :rtype: int
         """
+        # XXX We could cache this in memstore too until next write...
         count = self._soledad.get_count_from_index(
             fields.TYPE_MBOX_IDX,
             fields.TYPE_FLAGS_VAL, self.mbox)
+        if self._memstore is not None:
+            count += self._memstore.count_new()
         return count
 
     # unseen messages

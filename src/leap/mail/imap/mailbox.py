@@ -237,7 +237,10 @@ class SoledadMailbox(WithMsgFields, MBoxParser):
             # XXX It looks like it has been corrupted.
             # We need to be able to survive this.
             return None
-        return mbox.content.get(self.LAST_UID_KEY, 1)
+        last = mbox.content.get(self.LAST_UID_KEY, 1)
+        if self._memstore:
+            last = max(last, self._memstore.get_last_uid(mbox))
+        return last
 
     def _set_last_uid(self, uid):
         """
@@ -265,6 +268,7 @@ class SoledadMailbox(WithMsgFields, MBoxParser):
             value = count
 
         mbox.content[key] = value
+        # XXX this should be set in the memorystore instead!!!
         self._soledad.put_doc(mbox)
 
     last_uid = property(
@@ -534,12 +538,17 @@ class SoledadMailbox(WithMsgFields, MBoxParser):
         # can treat them all the same.
         # Change this to the flag that twisted expects when we
         # switch to content-hash based index + local UID table.
+        print
+        print "FETCHING..."
 
         sequence = False
         #sequence = True if uid == 0 else False
 
         messages_asked = self._bound_seq(messages_asked)
+        print "asked: ", messages_asked
         seq_messg = self._filter_msg_seq(messages_asked)
+
+        print "seq: ", seq_messg
         getmsg = lambda uid: self.messages.get_msg_by_uid(uid)
 
         # for sequence numbers (uid = 0)
@@ -788,7 +797,10 @@ class SoledadMailbox(WithMsgFields, MBoxParser):
 
         # XXX should use a public api instead
         hdoc = msg._hdoc
-        self.messages.add_hdocset_docid(hdoc.doc_id)
+
+        # XXX use memory store
+        if hasattr(hdoc, 'doc_id'):
+            self.messages.add_hdocset_docid(hdoc.doc_id)
 
         deferLater(reactor, 1, self.notify_new)
 
