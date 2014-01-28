@@ -51,7 +51,6 @@ def get_size(item):
     """
     seen = set()
     size = _get_size(item, seen)
-    #print "len(seen) ", len(seen)
     del seen
     collect()
     return size
