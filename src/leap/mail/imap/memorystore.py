@@ -351,7 +351,7 @@ class MemoryStore(object):
         doc_id = fdoc.doc_id
         return doc_id
 
-    def get_message(self, mbox, uid):
+    def get_message(self, mbox, uid, flags_only=False):
         """
         Get a MessageWrapper for the given mbox and uid combination.
 
@@ -363,13 +363,20 @@ class MemoryStore(object):
         :return: MessageWrapper or None
         """
         key = mbox, uid
+        FDOC = MessagePartType.fdoc.key
+
         msg_dict = self._msg_store.get(key, None)
         if empty(msg_dict):
             return None
         new, dirty = self._get_new_dirty_state(key)
-        return MessageWrapper(from_dict=msg_dict,
-                              new=new, dirty=dirty,
-                              memstore=weakref.proxy(self))
+        if flags_only:
+            return MessageWrapper(fdoc=msg_dict[FDOC],
+                                  new=new, dirty=dirty,
+                                  memstore=weakref.proxy(self))
+        else:
+            return MessageWrapper(from_dict=msg_dict,
+                                  new=new, dirty=dirty,
+                                  memstore=weakref.proxy(self))
 
     def remove_message(self, mbox, uid):
         """
@@ -583,7 +590,7 @@ class MemoryStore(object):
         if fdoc and fields.DELETED_FLAG in fdoc[fields.FLAGS_KEY]:
             return None
 
-        uid = fdoc.content[fields.UID_KEY]
+        uid = fdoc[fields.UID_KEY]
         key = mbox, uid
         new = key in self._new
         dirty = key in self._dirty
