@@ -50,7 +50,7 @@
   o Makes efficient use of indexes and count method. Closes #4616.
   o Handle correctly unicode characters in emails. Closes #4838.
 
--- 2014 --
+-- 2013 --
 
 0.3.8 Dec 6:
   o Fail gracefully when failing to decrypt incoming messages. Closes

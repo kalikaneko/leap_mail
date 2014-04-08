@@ -607,8 +607,6 @@ class LeapIncomingMail(object):
 
         def msgSavedCallback(result):
             if not empty(result):
-                print "RESULT CALLBACK ------ ", result
-
                 leap_events.signal(IMAP_MSG_SAVED_LOCALLY)
                 deferLater(reactor, 0, self._delete_incoming_message, doc)
                 leap_events.signal(IMAP_MSG_DELETED_INCOMING)
