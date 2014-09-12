@@ -89,9 +89,6 @@ def doc_has_errors(doc):
     # TODO Compatibility check with the index in pre-0.6 mx
     # that does not write the ERROR_DECRYPTING_KEY
     # This should be removed in 0.7
-    # FIXME this needs a matching change in mx!!!
-    # --> need to add ERROR_DECRYPTING_KEY = False
-    # as default.
     if err is None:
         warnings.warn("JUST_MAIL_COMPAT_IDX will be deprecated!",
                       DeprecationWarning)
