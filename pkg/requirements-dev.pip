@@ -11,4 +11,9 @@
 #       to install it. (do it after python setup.py develop and it
 #       will only install this)
 
--e git+git://leap.se/soledad@develop#egg=leap.soledad
+#-e git+git://leap.se/soledad@develop#egg=leap.soledad
+
+
+# required for manhole
+PyCrypto
+pyasn1

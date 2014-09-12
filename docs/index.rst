@@ -8,15 +8,27 @@ Welcome to leap.mail's documentation!
 
 This is the documentation for the ``leap.imap`` module. It is a twisted package
 that exposes two services, ``smtp`` and ``imap``, that run local proxies and interact
-with a remote ``LEAP`` provider that offers *a soledad syncronization endpoint*
-and receive the outgoing email.
+with a remote ``LEAP`` provider that offers *a soledad syncronization endpoint*,
+which receives and process the outgoing email.
 
+How does this thing work?
+-------------------------
 See :ref:`the life cycle of a leap email <mail_journey>` for an overview of the life cycle
 of an email through ``LEAP`` providers.
 
-``Soledad`` stores its documents as local ``sqlcipher`` tables, and syncs
-against the soledad sync service in the provider.
+Message stores and data layer
+-----------------------------
 
+The messages in the incoming queue (encrypted with public key), and also the
+processed messages and their metadata (encrypted with a symmetric key) are
+stored internally as ``Soledad`` documents.
+
+.. TODO add links to soledad design docs.
+
+``Soledad`` stores its documents in ``u1db`` using a custom backend that allows
+to save them as local ``sqlcipher`` tables. Soledad also syncs periodically
+against the soledad sync service in the provider (the remote replica, in u1db
+terms).
 
 .. TODO clear document types documentation.
 
@@ -25,6 +37,9 @@ different documents that are stored in ``Soledad``. The idea behind this is to
 keep clear the separation between *mutable* and *inmutable* parts, and still being able to
 reconstruct arbitrarily nested email structures easily.
 
+For performance reasons, we keep an inmemory store that is periodically dumped
+to the solead store.
+
 In the coming releases we are going to be working towards the goal of exposing
 a protocol-agnostic email public API, so that third party mail clients can
 manipulate the data layer without having to resort to handling the sql tables or
@@ -32,12 +47,14 @@ doing direct u1db calls. The code will be transitioning towards a LEAPMail
 public API that we can stabilize as soon as possible, and leaving the IMAP
 server as another code entity that uses this lower layer.
 
-
+Useful documents for the fellow hacker
+-----------------------------------------
 ..
 .. Contents:
 .. toctree::
    :maxdepth: 2
 
+   hacking
 ..   intro
 ..   tutorial
 
