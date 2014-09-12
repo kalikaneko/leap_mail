@@ -15,11 +15,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
-Incoming mail fetcher.
+Incoming Mail Processing.
 """
 import copy
 import logging
-import threading
 import time
 import sys
 import traceback
@@ -32,6 +31,7 @@ from StringIO import StringIO
 
 from twisted.python import log
 from twisted.internet import defer
+from twisted.internet import reactor
 from twisted.internet.task import LoopingCall
 from twisted.internet.task import deferLater
 from u1db import errors as u1db_errors
@@ -65,6 +65,89 @@ PGP_BEGIN = "-----BEGIN PGP MESSAGE-----"
 PGP_END = "-----END PGP MESSAGE-----"
 
 
+def doc_is_msg(doc):
+    """
+    Check if the content for this document matches the key-signature
+    of the document type we use for messages.
+
+    :param doc:
+    :type doc:
+    :rtype: bool
+    """
+    keys = doc.content.keys()
+    return ENC_SCHEME_KEY in keys and ENC_JSON_KEY in keys
+
+
+def doc_has_errors(doc):
+    """
+    Check if the content of this document has errors.
+
+    :param doc:
+    :rtype: bool
+    """
+    err = doc.content.get(fields.ERROR_DECRYPTING_KEY, None)
+    # TODO Compatibility check with the index in pre-0.6 mx
+    # that does not write the ERROR_DECRYPTING_KEY
+    # This should be removed in 0.7
+    # FIXME this needs a matching change in mx!!!
+    # --> need to add ERROR_DECRYPTING_KEY = False
+    # as default.
+    if err is None:
+        warnings.warn("JUST_MAIL_COMPAT_IDX will be deprecated!",
+                      DeprecationWarning)
+    return bool(err)
+
+
+def do_multipart_sanity_check(msg):
+    """
+    Perform a sanity check against a multipart encrypted msg.
+
+    :param msg: The original encrypted message.
+    :type msg: Message
+    """
+    payload = msg.get_payload()
+    if len(payload) != 2:
+        raise MalformedMessage(
+            'Multipart/encrypted messages should have exactly 2 body '
+            'parts (instead of %d).' % len(payload))
+    if payload[0].get_content_type() != 'application/pgp-encrypted':
+        raise MalformedMessage(
+            "Multipart/encrypted messages' first body part should "
+            "have content type equal to 'application/pgp-encrypted' "
+            "(instead of %s)." % payload[0].get_content_type())
+    if payload[1].get_content_type() != 'application/octet-stream':
+        raise MalformedMessage(
+            "Multipart/encrypted messages' second body part should "
+            "have content type equal to 'octet-stream' (instead of "
+            "%s)." % payload[1].get_content_type())
+
+
+def get_incoming_mail(soledad):
+    """
+    Retrieves a list of documents that are tagged as incoming mail.
+
+    :param soledad: Soledad instance.
+    :returns: document list
+    :rtype: list
+    """
+    return soledad.get_from_index(fields.JUST_MAIL_IDX, "*", "0")
+
+
+def get_incoming_mail_from_old_index(soledad):
+    """
+    Retrieves a list of documents that are tagged as incoming mail.
+
+    :param soledad: Soledad instance.
+    :returns: document list
+    :rtype: list
+    """
+    # It looks like we are a dealing with an outdated
+    # mx. Fallback to the version of the index
+    warnings.warn("JUST_MAIL_COMPAT_IDX will be deprecated!",
+                  DeprecationWarning)
+    return soledad.get_from_index(fields.JUST_MAIL_COMPAT_IDX, "*")
+
+
 class MalformedMessage(Exception):
     """
     Raised when a given message is not well formed.
@@ -74,15 +157,19 @@ class MalformedMessage(Exception):
 
 class IncomingMailProcessor(object):
     """
-    Fetches and process mail from the incoming pool.
+    Fetch and process mail from the incoming pool.
 
-    This object has public methods start_loop and stop that will
-    actually initiate a LoopingCall with check_period recurrency.
-    The LoopingCall itself will invoke the fetch method each time
-    that the check_period expires.
+    This object has public methods ``start_fetching_loop`` and
+    ``stop_fetching_loop`` that will actually initiate a LoopingCall with
+    check_period recurrency.  The LoopingCall itself will invoke the fetch
+    method each time that the check_period expires.
 
-    This loop will sync the soledad db with the remote server and
-    process all the documents found tagged as incoming mail.
+    When the Mail services are needed to go to the offline state,
+    the fetching loop needs to be stopped.
+
+    This fetching loop will sync the soledad db with the remote server, and
+    when it successfully finishes process all the documents found tagged as
+    incoming mail.
     """
 
     RECENT_FLAG = "\\Recent"
@@ -97,8 +184,6 @@ class IncomingMailProcessor(object):
     LEAP_SIGNATURE_VALID = 'valid'
     LEAP_SIGNATURE_INVALID = 'invalid'
     LEAP_SIGNATURE_COULD_NOT_VERIFY = 'could not verify'
-
-    fetching_lock = threading.Lock()
 
     def __init__(self, keymanager, soledad, imap_account,
                  check_period, userid):
@@ -133,6 +218,7 @@ class IncomingMailProcessor(object):
 
         self._loop = None
         self._check_period = check_period
+        self.syncing = False
 
         # initialize a mail parser only once
         self._parser = Parser()
@@ -143,6 +229,25 @@ class IncomingMailProcessor(object):
             logger.warning('tried to get key, but null keymanager found')
             return None
         return self._keymanager.get_key(self._userid, OpenPGPKey, private=True)
+
+    @deferred_to_thread
+    # XXX this should live in a dedicated, 1-thread threadpool.
+    def _sync_soledad(self):
+        """
+        Synchronize with remote soledad, in a separate thread.
+
+        :returns: a list of LeapDocuments, or None.
+        :rtype: iterable or None
+        """
+        log.msg('FETCH: syncing soledad...')
+        try:
+            self._soledad.sync()
+        except InvalidAuthTokenError:
+            # if the token is invalid, send an event so the GUI can
+            # disable mail and show an error message.
+            leap_events.signal(SOLEDAD_INVALID_AUTH_TOKEN)
+        else:
+            log.msg('FETCH soledad SYNCED.')
 
     #
     # Public API: fetch, start_loop, stop.
@@ -156,31 +261,30 @@ class IncomingMailProcessor(object):
         in a separate thread
         """
         def syncSoledadCallback(result):
-            # FIXME this needs a matching change in mx!!!
-            # --> need to add ERROR_DECRYPTING_KEY = False
-            # as default.
             try:
-                doclist = self._soledad.get_from_index(
-                    fields.JUST_MAIL_IDX, "*", "0")
+                # XXX FIXME -----------------------------------
+                # syncing attribute should be written when
+                # the decryption and processing pipeline for
+                # all documents has finished.
+                self.syncing = False
+                doclist = get_incoming_mail(self._soledad)
             except u1db_errors.InvalidGlobbing:
-                # It looks like we are a dealing with an outdated
-                # mx. Fallback to the version of the index
-                warnings.warn("JUST_MAIL_COMPAT_IDX will be deprecated!",
-                              DeprecationWarning)
-                doclist = self._soledad.get_from_index(
-                    fields.JUST_MAIL_COMPAT_IDX, "*")
+                doclist = get_incoming_mail_from_old_index(self._soledad)
             self._process_doclist(doclist)
 
-        logger.debug("fetching mail for: %s %s" % (
-            self._soledad.uuid, self._userid))
-        if not self.fetching_lock.locked():
-            d1 = self._sync_soledad()
-            d = defer.gatherResults([d1], consumeErrors=True)
+        if self.syncing:
+            logger.debug("Already fetching mail.")
+            return None
+        else:
+            self.syncing = True
+            logger.debug("fetching mail for: %s %s" % (
+                self._soledad.uuid, self._userid))
+
+            # deferred that will fire when the sync thread finishes
+            d = self._sync_soledad()
             d.addCallbacks(syncSoledadCallback, self._errback)
             d.addCallbacks(self._signal_fetch_to_ui, self._errback)
             return d
-        else:
-            logger.debug("Already fetching mail.")
 
     def start_fetching_loop(self):
         """
@@ -209,24 +313,6 @@ class IncomingMailProcessor(object):
     def _errback(self, failure):
         logger.exception(failure.value)
         traceback.print_tb(*sys.exc_info())
-
-    @deferred_to_thread
-    def _sync_soledad(self):
-        """
-        Synchronize with remote soledad.
-
-        :returns: a list of LeapDocuments, or None.
-        :rtype: iterable or None
-        """
-        with self.fetching_lock:
-            try:
-                log.msg('FETCH: syncing soledad...')
-                self._soledad.sync()
-                log.msg('FETCH soledad SYNCED.')
-            except InvalidAuthTokenError:
-                # if the token is invalid, send an event so the GUI can
-                # disable mail and show an error message.
-                leap_events.signal(SOLEDAD_INVALID_AUTH_TOKEN)
 
     def _signal_fetch_to_ui(self, doclist):
         """
@@ -259,7 +345,7 @@ class IncomingMailProcessor(object):
     def _process_doclist(self, doclist):
         """
         Iterates through the doclist, checks if each doc
-        looks like a message, and yields a deferred that will decrypt and
+        looks like a message, and returns a deferred that will decrypt and
         process the message.
 
         :param doclist: iterable with msg documents.
@@ -272,33 +358,36 @@ class IncomingMailProcessor(object):
             return
         num_mails = len(doclist)
 
+        # XXX it makes more sense now to me to gather a list with all
+        # the documents, add the callbacks to each of those
+        # and have another callback (gatherResults?) for resetting the
+        # syncing flag.
+
+        # XXX Use deferredList ?
+
         for index, doc in enumerate(doclist):
             logger.debug("processing doc %d of %d" % (index + 1, num_mails))
             leap_events.signal(
                 IMAP_MSG_PROCESSING, str(index), str(num_mails))
 
-            keys = doc.content.keys()
-
-            # TODO Compatibility check with the index in pre-0.6 mx
-            # that does not write the ERROR_DECRYPTING_KEY
-            # This should be removed in 0.7
-
-            has_errors = doc.content.get(fields.ERROR_DECRYPTING_KEY, None)
-            if has_errors is None:
-                warnings.warn("JUST_MAIL_COMPAT_IDX will be deprecated!",
-                              DeprecationWarning)
+            has_errors = doc_has_errors(doc)
             if has_errors:
                 logger.debug("skipping msg with decrypting errors...")
 
-            if self._is_msg(keys) and not has_errors:
-                # Evaluating to bool of has_errors is intentional here.
-                # We don't mind at this point if it's None or False.
-
+            if not has_errors and doc_is_msg(doc):
                 # Ok, this looks like a legit msg, and with no errors.
                 # Let's process it!
 
+                # XXX FIXME -------------------------------------------
+                # This should not block! ------------------------------
+                # pass "ok" parameter instead to the callback, and add it
+                # locally
                 d1 = self._decrypt_doc(doc)
                 d = defer.gatherResults([d1], consumeErrors=True)
+
+                # XXX FIXME -----
+                # instead of relying on the store being on the same isntance
+                # pass it as a parameter.
                 d.addCallbacks(self._add_message_locally, self._errback)
 
     #
@@ -347,8 +436,6 @@ class IncomingMailProcessor(object):
         """
         log.msg('processing decrypted doc')
         doc, data = msgtuple
-
-        from twisted.internet import reactor
 
         # XXX turn this into an errBack for each one of
         # the deferreds that would process an individual document
@@ -478,7 +565,7 @@ class IncomingMailProcessor(object):
         """
         log.msg('decrypting multipart encrypted msg')
         msg = copy.deepcopy(msg)
-        self._msg_multipart_sanity_check(msg)
+        do_multipart_sanity_check(msg)
 
         # parse message and get encrypted content
         pgpencmsg = msg.get_payload()[1]
@@ -586,19 +673,19 @@ class IncomingMailProcessor(object):
         Adds a message to local inbox and delete it from the incoming db
         in soledad.
 
-        # XXX this comes from a gatherresult...
         :param msgtuple: a tuple consisting of a SoledadDocument
                          instance containing the incoming message
                          and data, the json-encoded, decrypted content of the
                          incoming message
         :type msgtuple: (SoledadDocument, str)
         """
-        from twisted.internet import reactor
         msgtuple = first(result)
 
         doc, data = msgtuple
         log.msg('adding message %s to local db' % (doc.doc_id,))
 
+
+        # XXX WTF  ---------
         if isinstance(data, list):
             if empty(data):
                 return False
@@ -614,43 +701,5 @@ class IncomingMailProcessor(object):
                                    notify_on_disk=True)
         d.addCallbacks(msgSavedCallback, self._errback)
 
-    #
-    # helpers
-    #
-
-    def _msg_multipart_sanity_check(self, msg):
-        """
-        Performs a sanity check against a multipart encrypted msg
-
-        :param msg: The original encrypted message.
-        :type msg: Message
-        """
-        # sanity check
-        payload = msg.get_payload()
-        if len(payload) != 2:
-            raise MalformedMessage(
-                'Multipart/encrypted messages should have exactly 2 body '
-                'parts (instead of %d).' % len(payload))
-        if payload[0].get_content_type() != 'application/pgp-encrypted':
-            raise MalformedMessage(
-                "Multipart/encrypted messages' first body part should "
-                "have content type equal to 'application/pgp-encrypted' "
-                "(instead of %s)." % payload[0].get_content_type())
-        if payload[1].get_content_type() != 'application/octet-stream':
-            raise MalformedMessage(
-                "Multipart/encrypted messages' second body part should "
-                "have content type equal to 'octet-stream' (instead of "
-                "%s)." % payload[1].get_content_type())
-
-    def _is_msg(self, keys):
-        """
-        Checks if the keys of a dictionary match the signature
-        of the document type we use for messages.
-
-        :param keys: iterable containing the strings to match.
-        :type keys: iterable of strings.
-        :rtype: bool
-        """
-        return ENC_SCHEME_KEY in keys and ENC_JSON_KEY in keys
 
 __all__ = ["IncomingMailProcessor"]
