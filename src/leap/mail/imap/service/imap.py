@@ -21,7 +21,8 @@ import logging
 import os
 import time
 
-from twisted.internet import defer, threads
+from twisted.internet import reactor
+from twisted.internet import threads
 from twisted.internet.protocol import ServerFactory
 from twisted.internet.error import CannotListenError
 from twisted.mail import imap4
@@ -33,7 +34,7 @@ from leap.common import events as leap_events
 from leap.common.check import leap_assert, leap_assert_type, leap_check
 from leap.keymanager import KeyManager
 from leap.mail.imap.account import SoledadBackedAccount
-from leap.mail.imap.fetch import LeapIncomingMail
+from leap.mail.incoming import IncomingMailProcessor
 from leap.mail.imap.memorystore import MemoryStore
 from leap.mail.imap.server import LeapIMAPServer
 from leap.mail.imap.soledadstore import SoledadStore
@@ -185,11 +186,6 @@ def run_service(*args, **kwargs):
               the reactor when starts listening, and the factory for
               the protocol.
     """
-    from twisted.internet import reactor
-    # it looks like qtreactor does not honor this,
-    # but other reactors should.
-    reactor.suggestThreadPoolSize(20)
-
     leap_assert(len(args) == 2)
     soledad, keymanager = args
     leap_assert_type(soledad, Soledad)
@@ -205,17 +201,17 @@ def run_service(*args, **kwargs):
     factory = LeapIMAPFactory(uuid, userid, soledad)
 
     try:
-        tport = reactor.listenTCP(port, factory,
-                                  interface="localhost")
+        listening_port = reactor.listenTCP(
+            port, factory, interface="localhost")
         if not offline:
-            fetcher = LeapIncomingMail(
+            incoming_mail = IncomingMailProcessor(
                 keymanager,
                 soledad,
                 factory.theAccount,
                 check_period,
                 userid)
         else:
-            fetcher = None
+            incoming_mail = None
     except CannotListenError:
         logger.error("IMAP Service failed to start: "
                      "cannot listen in port %s" % (port,))
@@ -223,7 +219,7 @@ def run_service(*args, **kwargs):
         logger.error("Error launching IMAP service: %r" % (exc,))
     else:
         # all good.
-        # (the caller has still to call fetcher.start_loop)
+        # (the caller has still to call incoming_mail.start_fetching_loop)
 
         if DO_MANHOLE:
             # TODO get pass from env var.too.
@@ -236,7 +232,7 @@ def run_service(*args, **kwargs):
                               interface="127.0.0.1")
         logger.debug("IMAP4 Server is RUNNING in port  %s" % (port,))
         leap_events.signal(IMAP_SERVICE_STARTED, str(port))
-        return fetcher, tport, factory
+        return incoming_mail, listening_port, factory
 
     # not ok, signal error.
     leap_events.signal(IMAP_SERVICE_FAILED_TO_START, str(port))

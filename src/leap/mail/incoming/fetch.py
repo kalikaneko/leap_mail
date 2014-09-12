@@ -72,7 +72,7 @@ class MalformedMessage(Exception):
     pass
 
 
-class LeapIncomingMail(object):
+class IncomingMailProcessor(object):
     """
     Fetches and process mail from the incoming pool.
 
@@ -182,9 +182,9 @@ class LeapIncomingMail(object):
         else:
             logger.debug("Already fetching mail.")
 
-    def start_loop(self):
+    def start_fetching_loop(self):
         """
-        Starts a loop to fetch mail.
+        Start a loop to fetch mail periodically.
         """
         if self._loop is None:
             self._loop = LoopingCall(self.fetch)
@@ -192,10 +192,9 @@ class LeapIncomingMail(object):
         else:
             logger.warning("Tried to start an already running fetching loop.")
 
-    def stop(self):
-        # XXX change the name to stop_loop, for consistency.
+    def stop_fetching_loop(self):
         """
-        Stops the loop that fetches mail.
+        Stop the loop that fetches mail.
         """
         if self._loop and self._loop.running is True:
             self._loop.stop()
@@ -653,3 +652,5 @@ class LeapIncomingMail(object):
         :rtype: bool
         """
         return ENC_SCHEME_KEY in keys and ENC_JSON_KEY in keys
+
+__all__ = ["IncomingMailProcessor"]
