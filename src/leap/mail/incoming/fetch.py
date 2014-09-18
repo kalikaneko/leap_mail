@@ -369,7 +369,10 @@ class IncomingMailProcessor(object):
 
             has_errors = doc_has_errors(doc)
             if has_errors:
-                logger.debug("skipping msg with decrypting errors...")
+                # this gave some error while decrypting, and we cannot recover.
+                # Skipping for the moment, but we might want to either try to
+                # retry at some point, or delete those.
+                logger.debug("Skipping msg with decrypting errors...")
 
             if not has_errors and doc_is_msg(doc):
                 # Ok, this looks like a legit msg, and with no errors.
