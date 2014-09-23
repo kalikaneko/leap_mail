@@ -60,17 +60,13 @@ Useful documents for the fellow hacker
 
 
 API documentation
------------------
+==================
 
 If you were looking for the documentation of the ``leap.mail`` module, you will
 find it here. Beware that the public API will still be unstable for the next
 development cycles.
 
-.. toctree::
-   :maxdepth: 2
-
    api/mail
-
 
 
 
