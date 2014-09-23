@@ -107,7 +107,14 @@ cp.read(bmconf)
 
 userid = cp.get(SECTION, "userid")
 uuid = cp.get(SECTION, "uuid")
-passwd = unicode(cp.get(SECTION, "passwd"))
+
+try:
+    passwd = unicode(cp.get(SECTION, "passwd"))
+except Exception:
+    passwd = ""
+
+if not passwd:
+    passwd = unicode(getpass.getpass("Soledad passphrase: "))
 
 # XXX get this right from the environment variable !!!
 port = 1984
@@ -116,8 +123,6 @@ if not userid or not uuid:
     print "[-] Config file missing userid or uuid field"
     sys.exit(1)
 
-if not passwd:
-    passwd = unicode(getpass.getpass("Soledad passphrase: "))
 
 
 secrets = os.path.expanduser("~/.config/leap/soledad/%s.secret" % (uuid,))
