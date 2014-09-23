@@ -52,7 +52,7 @@ currently) not try to sync with remote replicas. Very useful during development,
 although you need to login with the remote server at least once before being
 able to use it.
 
-Testing the service with twistd
+Running the service with twistd
 ===============================
 
 In order to run the mail service (currently, the imap server only), you will
@@ -104,7 +104,7 @@ Minimal offlineimap configuration
 
 You can use this as a sample offlineimap config file::
 
- [general]
+  [general]
   accounts = leap-local
 
   [Account leap-local]
@@ -119,9 +119,36 @@ You can use this as a sample offlineimap config file::
   type = IMAP
   ssl = no
   remotehost = localhost
-  remoteport = 9930
+  remoteport = 1984
   remoteuser = user
   remotepass = pass
+
+Testing utilities
+-----------------
+There are a bunch of utilities to test IMAP delivery in ``imap/tests`` folder.
+If looking for a quick way of inspecting mailboxes, have a look at ``getmail``::
+
+ ./getmail me@testprovider.net mahsikret
+ 1. Drafts
+ 2. INBOX
+ 3. Trash
+ Which mailbox? [1] 2
+ 1 Subject: this is the time of the revolution
+ 2 Subject: ignore me
+
+ Which message? [1] (Q quits) 1
+ 1 X-Leap-Provenance: Thu, 11 Sep 2014 16:52:11 -0000; pubkey="C1F8DE10BD151F99"
+ Received: from mx1.testprovider.net(mx1.testprovider.net [198.197.196.195])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256 bits))
+ (Client CN "*.foobar.net", Issuer "Gandi Standard SSL CA" (not verified))
+ by blackhole (Postfix) with ESMTPS id DEADBEEF
+ for <me@testprovider.net>; Thu, 11 Sep 2014 16:52:10 +0000 (UTC)
+ Delivered-To: 926d4915cfd42b6d96d38660c04613af@testprovider.net
+ Message-Id: <20140911165205.GB8054@samsara>
+ From: Kali <kali@leap.se>
+ 
+ (snip)
+ 
 
 Debugging IMAP commands
 =======================
