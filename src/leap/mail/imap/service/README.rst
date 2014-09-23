@@ -36,4 +36,4 @@ debugging
 
 Use ngrep to obtain logs of the sequences::
 
-        sudo ngrep -d lo -W byline port 9930
+  sudo ngrep -d lo -W byline port 1984
