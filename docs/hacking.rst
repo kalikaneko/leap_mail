@@ -1,10 +1,11 @@
 .. _hacking:
 
 ========
-Hacking
+Hacking 
 ========
 
-Some hints oriented to `leap.mail` hackers.
+Some hints oriented to `leap.mail` hackers. These notes are mostly related to
+the imap server, although they probably will be useful for other pieces too.
 
 Don't panic! Just manhole into it
 =================================
@@ -29,8 +30,17 @@ Did I mention how *awesome* twisted is?? ``:)``
 
 Profiling
 =========
+If using ``twistd`` to launch the server, you can use twisted profiling
+capabities::
 
-Use the ``LEAP_PROFILE_IMAPCMD`` to get profiling of certain IMAP commands::
+  LEAP_MAIL_CONF=~/.leapmailrc twistd --profile=/tmp/mail-profiling -n -y imap-server.tac
+
+``--profiler`` option allows you to select different profilers (default is
+"hotshot").
+
+You can also do profiling when using the ``bitmask`` client. Enable the
+``LEAP_PROFILE_IMAPCMD`` environment flag to get profiling of certain IMAP
+commands::
 
  LEAP_PROFILE_IMAPCMD=1 bitmask --debug
 
@@ -42,7 +52,7 @@ currently) not try to sync with remote replicas. Very useful during development,
 although you need to login with the remote server at least once before being
 able to use it.
 
-testing the service with twistd
+Testing the service with twistd
 ===============================
 
 In order to run the mail service (currently, the imap server only), you will
@@ -64,13 +74,25 @@ Run the twisted service::
 
   LEAP_IMAP_CONFIG=~/.leapmailrc twistd -n -y imap-server.tac
 
-Now you can telnet into your local IMAP server::
+Now you can telnet into your local IMAP server and read your mail like a real
+programmer™::
 
   % telnet localhost 1984
   Trying 127.0.0.1...
   Connected to localhost.
   Escape character is '^]'.
   * OK [CAPABILITY IMAP4rev1 LITERAL+ IDLE NAMESPACE] Twisted IMAP4rev1 Ready
+  tag LOGIN me@myprovider.net mahsikret
+  tag OK LOGIN succeeded
+  tag SELECT Inbox
+  * 2 EXISTS
+  * 1 RECENT
+  * FLAGS (\Seen \Answered \Flagged \Deleted \Draft \Recent List)
+  * OK [UIDVALIDITY 1410453885932] UIDs valid
+  tag OK [READ-WRITE] SELECT successful
+  ^]
+  telnet> Connection closed.
+
 
 Although you probably prefer to use ``offlineimap`` for tests:: 
 
