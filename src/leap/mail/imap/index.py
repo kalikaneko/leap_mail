@@ -47,23 +47,27 @@ class IndexedDB(object):
                     "Need a soledad attribute accesible in the instance")
         leap_assert_type(self.INDEXES, dict)
 
+        def _create_indexes(db_indexes):
+            db_indexes = dict(db_indexes)
+            for name, expression in fields.INDEXES.items():
+                if name not in db_indexes:
+                    # The index does not yet exist.
+                    self._soledad.create_index(name, *expression)
+                    continue
+
+                if expression == db_indexes[name]:
+                    # The index exists and is up to date.
+                    continue
+                # The index exists but the definition is not what expected, so
+                # we delete it and add the proper index expression.
+                d1 = self._soledad.delete_index(name)
+                d1.addCallback(lambda _: self._soledad.create_index(
+                    name, *expression))
+
         # Ask the database for currently existing indexes.
         if not self._soledad:
             logger.debug("NO SOLEDAD ON IMAP INITIALIZATION")
             return
-        db_indexes = dict()
         if self._soledad is not None:
-            db_indexes = dict(self._soledad.list_indexes())
-        for name, expression in fields.INDEXES.items():
-            if name not in db_indexes:
-                # The index does not yet exist.
-                self._soledad.create_index(name, *expression)
-                continue
-
-            if expression == db_indexes[name]:
-                # The index exists and is up to date.
-                continue
-            # The index exists but the definition is not what expected, so we
-            # delete it and add the proper index expression.
-            self._soledad.delete_index(name)
-            self._soledad.create_index(name, *expression)
+            d = self._soledad.list_indexes()
+            d.addCallback(_create_indexes)

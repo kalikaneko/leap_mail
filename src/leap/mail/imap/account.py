@@ -134,19 +134,25 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
         return sorted(self.__mailboxes)
 
     def _load_mailboxes(self):
-        self.__mailboxes.update(
-            [doc.content[self.MBOX_KEY]
-             for doc in self._soledad.get_from_index(
-                 self.TYPE_IDX, self.MBOX_KEY)])
+        def update_mailboxes(db_indexes):
+            self.__mailboxes.update(
+                [doc.content[self.MBOX_KEY] for doc in db_indexes])
+        d = self._soledad.get_from_index(self.TYPE_IDX, self.MBOX_KEY)
+        d.addCallback(update_mailboxes)
+        return d
 
     @property
     def subscriptions(self):
         """
         A list of the current subscriptions for this account.
         """
-        return [doc.content[self.MBOX_KEY]
-                for doc in self._soledad.get_from_index(
-                    self.TYPE_SUBS_IDX, self.MBOX_KEY, '1')]
+        def get_docs_content(docs):
+            return [doc.content[self.MBOX_KEY] for doc in docs]
+
+        d = self._soledad.get_from_index(
+            self.TYPE_SUBS_IDX, self.MBOX_KEY, '1')
+        d.addCallback(get_docs_content)
+        return d
 
     def getMailbox(self, name):
         """
