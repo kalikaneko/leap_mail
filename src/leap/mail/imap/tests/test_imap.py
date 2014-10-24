@@ -68,7 +68,6 @@ def sortNest(l):
 
 
 class TestRealm:
-
     """
     A minimal auth realm for testing purposes only
     """
@@ -83,7 +82,6 @@ class TestRealm:
 #
 
 class MessageCollectionTestCase(IMAP4HelperMixin, unittest.TestCase):
-
     """
     Tests for the MessageCollection class
     """
@@ -466,15 +464,18 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         def subscribe():
             return self.client.subscribe('this/mbox')
 
+        def get_subscriptions(ignored):
+            return LeapIMAPServer.theAccount.getSubscriptions()
+
         d1 = self.connected.addCallback(strip(login))
         d1.addCallbacks(strip(subscribe), self._ebGeneral)
         d1.addCallbacks(self._cbStopClient, self._ebGeneral)
         d2 = self.loopback()
         d = defer.gatherResults([d1, d2])
-        d.addCallback(lambda _:
-                      self.assertEqual(
-                          LeapIMAPServer.theAccount.subscriptions,
-                          ['this/mbox']))
+        d.addCallback(get_subscriptions)
+        d.addCallback(lambda subscriptions:
+                      self.assertEqual(subscriptions,
+                                       ['this/mbox']))
         return d
 
     def testUnsubscribe(self):
@@ -490,15 +491,18 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         def unsubscribe():
             return self.client.unsubscribe('this/mbox')
 
+        def get_subscriptions(ignored):
+            return LeapIMAPServer.theAccount.getSubscriptions()
+
         d1 = self.connected.addCallback(strip(login))
         d1.addCallbacks(strip(unsubscribe), self._ebGeneral)
         d1.addCallbacks(self._cbStopClient, self._ebGeneral)
         d2 = self.loopback()
         d = defer.gatherResults([d1, d2])
-        d.addCallback(lambda _:
-                      self.assertEqual(
-                          LeapIMAPServer.theAccount.subscriptions,
-                          ['that/mbox']))
+        d.addCallback(get_subscriptions)
+        d.addCallback(lambda subscriptions:
+                      self.assertEqual(subscriptions,
+                                       ['that/mbox']))
         return d
 
     def testSelect(self):
@@ -809,7 +813,14 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         """
         Test Status command
         """
-        LeapIMAPServer.theAccount.addMailbox('root/subthings')
+        acc = LeapIMAPServer.theAccount
+
+        def add_mailbox():
+            print "Adding mailbox"
+            return acc.addMailbox('root/subthings')
+
+        #acc.callWhenReady(add_mailbox)
+
         # XXX FIXME ---- should populate this a little bit,
         # with unseen etc...
 
@@ -824,7 +835,9 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
             self.statused = result
 
         self.statused = None
-        d1 = self.connected.addCallback(strip(login))
+
+        d1 = self.connected.addCallback(strip(add_mailbox))
+        d1.addCallback(strip(login))
         d1.addCallbacks(strip(status), self._ebGeneral)
         d1.addCallbacks(statused, self._ebGeneral)
         d1.addCallbacks(self._cbStopClient, self._ebGeneral)

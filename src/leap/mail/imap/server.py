@@ -20,6 +20,7 @@ Leap IMAP4 Server Implementation.
 from copy import copy
 
 from twisted import cred
+from twisted.internet import reactor
 from twisted.internet.defer import maybeDeferred
 from twisted.mail import imap4
 from twisted.python import log
@@ -50,6 +51,7 @@ class LeapIMAPServer(imap4.IMAP4Server):
         leap_assert(uuid, "need a user in the initialization")
 
         self._userid = userid
+        self.reactor = reactor
 
         # initialize imap server!
         imap4.IMAP4Server.__init__(self, *args, **kwargs)
@@ -58,9 +60,6 @@ class LeapIMAPServer(imap4.IMAP4Server):
         # but we move it to the factory so we can
         # populate the test account properly (and only once
         # per session)
-
-        from twisted.internet import reactor
-        self.reactor = reactor
 
     def lineReceived(self, line):
         """

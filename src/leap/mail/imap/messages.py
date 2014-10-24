@@ -71,6 +71,7 @@ def try_unique_query(curried):
     :param curried: a curried function
     :type curried: callable
     """
+    # XXX FIXME ---------- convert to deferreds
     leap_assert(callable(curried), "A callable is expected")
     try:
         query = curried()
@@ -506,18 +507,15 @@ class LeapMessage(fields, MBoxParser):
         Return the document that keeps the flags for this
         message.
         """
-        result = {}
-        try:
-            flag_docs = self._soledad.get_from_index(
-                fields.TYPE_MBOX_UID_IDX,
-                fields.TYPE_FLAGS_VAL, self._mbox, str(self._uid))
-            result = first(flag_docs)
-        except Exception as exc:
-            # ugh! Something's broken down there!
-            logger.warning("ERROR while getting flags for UID: %s" % self._uid)
-            logger.exception(exc)
-        finally:
-            return result
+        def get_first_if_any(docs):
+            result = first(docs)
+            return result if result else {}
+
+        d = self._soledad.get_from_index(
+            fields.TYPE_MBOX_UID_IDX,
+            fields.TYPE_FLAGS_VAL, self._mbox, str(self._uid))
+        d.addCallback(get_first_if_any)
+        return d
 
     # TODO move to soledadstore instead of accessing soledad directly
     def _get_headers_doc(self):
@@ -525,10 +523,11 @@ class LeapMessage(fields, MBoxParser):
         Return the document that keeps the headers for this
         message.
         """
-        head_docs = self._soledad.get_from_index(
+        d = self._soledad.get_from_index(
             fields.TYPE_C_HASH_IDX,
             fields.TYPE_HEADERS_VAL, str(self.chash))
-        return first(head_docs)
+        d.addCallback(lambda docs: first(docs))
+        return d
 
     # TODO move to soledadstore instead of accessing soledad directly
     def _get_body_doc(self):
@@ -536,6 +535,8 @@ class LeapMessage(fields, MBoxParser):
         Return the document that keeps the body for this
         message.
         """
+        # XXX FIXME --- this might need a maybedeferred
+        # on the receiving side...
         hdoc_content = self.hdoc.content
         body_phash = hdoc_content.get(
             fields.BODY_KEY, None)
@@ -554,13 +555,11 @@ class LeapMessage(fields, MBoxParser):
                 return bdoc
 
         # no memstore, or no body doc found there
-        if self._soledad:
-            body_docs = self._soledad.get_from_index(
-                fields.TYPE_P_HASH_IDX,
-                fields.TYPE_CONTENT_VAL, str(body_phash))
-            return first(body_docs)
-        else:
-            logger.error("No phash in container, and no soledad found!")
+        d = self._soledad.get_from_index(
+            fields.TYPE_P_HASH_IDX,
+            fields.TYPE_CONTENT_VAL, str(body_phash))
+        d.addCallback(lambda docs: first(docs))
+        return d
 
     def __getitem__(self, key):
         """
@@ -1011,6 +1010,7 @@ class MessageCollection(WithMsgFields, IndexedDB, MBoxParser):
         Get recent-flags document from Soledad for this mailbox.
         :rtype: SoledadDocument or None
         """
+        # FIXME ----- use deferreds.
         curried = partial(
             self._soledad.get_from_index,
             fields.TYPE_MBOX_IDX,
@@ -1029,6 +1029,7 @@ class MessageCollection(WithMsgFields, IndexedDB, MBoxParser):
         :param uids: the uids to unset
         :type uid: sequence
         """
+        # FIXME ----- use deferreds.
         with self._rdoc_property_lock[self.mbox]:
             self.recent_flags.difference_update(
                 set(uids))
@@ -1042,11 +1043,11 @@ class MessageCollection(WithMsgFields, IndexedDB, MBoxParser):
         :param uid: the uid to unset
         :type uid: int
         """
+        # FIXME ----- use deferreds.
         with self._rdoc_property_lock[self.mbox]:
             self.recent_flags.difference_update(
                 set([uid]))
 
-    @deferred_to_thread
     def set_recent_flag(self, uid):
         """
         Set Recent flag for a given uid.
@@ -1054,6 +1055,7 @@ class MessageCollection(WithMsgFields, IndexedDB, MBoxParser):
         :param uid: the uid to set
         :type uid: int
         """
+        # FIXME ----- use deferreds.
         with self._rdoc_property_lock[self.mbox]:
             self.recent_flags = self.recent_flags.union(
                 set([uid]))
@@ -1068,6 +1070,7 @@ class MessageCollection(WithMsgFields, IndexedDB, MBoxParser):
                  the query failed.
         :rtype: SoledadDocument or None.
         """
+        # FIXME ----- use deferreds.
         curried = partial(
             self._soledad.get_from_index,
             fields.TYPE_MBOX_C_HASH_IDX,
@@ -1125,7 +1128,6 @@ class MessageCollection(WithMsgFields, IndexedDB, MBoxParser):
             return None
         return fdoc.content.get(fields.UID_KEY, None)
 
-    @deferred_to_thread
     def _get_uid_from_msgid(self, msgid):
         """
         Return a UID for a given message-id.
@@ -1144,7 +1146,6 @@ class MessageCollection(WithMsgFields, IndexedDB, MBoxParser):
         # XXX is this working?
         return self._get_uid_from_msgidCb(msgid)
 
-    @deferred_to_thread
     def set_flags(self, mbox, messages, flags, mode, observer):
         """
         Set flags for a sequence of messages.
@@ -1248,12 +1249,16 @@ class MessageCollection(WithMsgFields, IndexedDB, MBoxParser):
         Return an iterator through the UIDs of all messages, sorted in
         ascending order.
         """
-        db_uids = set([doc.content[self.UID_KEY] for doc in
-                       self._soledad.get_from_index(
-                           fields.TYPE_MBOX_IDX,
-                           fields.TYPE_FLAGS_VAL, self.mbox)
-                       if not empty(doc)])
-        return db_uids
+        # XXX FIXME ------ sorted???
+
+        def get_uids(docs):
+            return set([
+                doc.content[self.UID_KEY] for doc in docs if not empty(doc)])
+
+        d = self._soledad.get_from_index(
+            fields.TYPE_MBOX_IDX, fields.TYPE_FLAGS_VAL, self.mbox)
+        d.addCallback(get_uids)
+        return d
 
     def all_uid_iter(self):
         """
@@ -1277,16 +1282,21 @@ class MessageCollection(WithMsgFields, IndexedDB, MBoxParser):
         # XXX we really could return a reduced version with
         # just {'uid': (flags-tuple,) since the prefetch is
         # only oriented to get the flag tuples.
-        all_docs = [(
-            doc.content[self.UID_KEY],
-            dict(doc.content))
-            for doc in
-            self._soledad.get_from_index(
-                fields.TYPE_MBOX_IDX,
-                fields.TYPE_FLAGS_VAL, self.mbox)
-            if not empty(doc.content)]
-        all_flags = dict(all_docs)
-        return all_flags
+
+        def get_content(docs):
+            all_docs = [(
+                doc.content[self.UID_KEY],
+                dict(doc.content))
+                for doc in docs
+                if not empty(doc.content)]
+            all_flags = dict(all_docs)
+            return all_flags
+
+        d = self._soledad.get_from_index(
+            fields.TYPE_MBOX_IDX,
+            fields.TYPE_FLAGS_VAL, self.mbox)
+        d.addCallback(get_content)
+        return d
 
     def all_headers(self):
         """

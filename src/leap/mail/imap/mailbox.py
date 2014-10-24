@@ -303,20 +303,31 @@ class SoledadMailbox(WithMsgFields, MBoxParser):
         We do this to be able to filter the requests efficiently.
         """
         primed = self._known_uids_primed.get(self.mbox, False)
-        if not primed:
-            known_uids = self.messages.all_soledad_uid_iter()
+        # XXX handle the maybeDeferred
+
+        def set_primed(known_uids):
             self._memstore.set_known_uids(self.mbox, known_uids)
             self._known_uids_primed[self.mbox] = True
+
+        if not primed:
+            d = self.messages.all_soledad_uid_iter()
+            d.addCallback(set_primed)
+            return d
 
     def prime_flag_docs_to_memstore(self):
         """
         Prime memstore with all the flags documents.
         """
         primed = self._fdoc_primed.get(self.mbox, False)
-        if not primed:
-            all_flag_docs = self.messages.get_all_soledad_flag_docs()
-            self._memstore.load_flag_docs(self.mbox, all_flag_docs)
+
+        def set_flag_docs(flag_docs):
+            self._memstore.load_flag_docs(self.mbox, flag_docs)
             self._fdoc_primed[self.mbox] = True
+
+        if not primed:
+            d = self.messages.get_all_soledad_flag_docs()
+            d.addCallback(set_flag_docs)
+            return d
 
     def getUIDValidity(self):
         """
