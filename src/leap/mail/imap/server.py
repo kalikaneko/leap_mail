@@ -353,9 +353,12 @@ class LeapIMAPServer(imap4.IMAP4Server):
         self.sendPositiveResponse(tag, '%s completed' % (cmdName,))
     # -------------------- end isSubscribed patch -----------
 
+    # TODO ----
+    # subscribe method had also to be changed to accomodate
+    # deferred
+    # Revert to regular methods as soon as we implement non-deferred memory
+    # cache.
     def do_SUBSCRIBE(self, tag, name):
-        # subscribe method had also to be changed to accomodate
-        # deferred
         name = self._parseMbox(name)
 
         def _subscribeCb(_):
@@ -363,19 +366,77 @@ class LeapIMAPServer(imap4.IMAP4Server):
 
         def _subscribeEb(failure):
             m = failure.value
+            log.err()
             if failure.check(imap4.MailboxException):
                 self.sendNegativeResponse(tag, str(m))
             else:
                 self.sendBadResponse(
                     tag,
                     "Server error encountered while subscribing to mailbox")
-                log.err()
 
         d = self.account.subscribe(name)
         d.addCallbacks(_subscribeCb, _subscribeEb)
+        return d
 
     auth_SUBSCRIBE = (do_SUBSCRIBE, arg_astring)
     select_SUBSCRIBE = auth_SUBSCRIBE
+
+    def do_UNSUBSCRIBE(self, tag, name):
+        # unsubscribe method had also to be changed to accomodate
+        # deferred
+        name = self._parseMbox(name)
+
+        def _unsubscribeCb(_):
+            self.sendPositiveResponse(tag, 'Unsubscribed')
+
+        def _unsubscribeEb(failure):
+            m = failure.value
+            log.err()
+            if failure.check(imap4.MailboxException):
+                self.sendNegativeResponse(tag, str(m))
+            else:
+                self.sendBadResponse(
+                    tag,
+                    "Server error encountered while unsubscribing "
+                    "from mailbox")
+
+        d = self.account.unsubscribe(name)
+        d.addCallbacks(_unsubscribeCb, _unsubscribeEb)
+        return d
+
+    auth_UNSUBSCRIBE = (do_UNSUBSCRIBE, arg_astring)
+    select_UNSUBSCRIBE = auth_UNSUBSCRIBE
+
+    def do_RENAME(self, tag, oldname, newname):
+        oldname, newname = [self._parseMbox(n) for n in oldname, newname]
+        if oldname.lower() == 'inbox' or newname.lower() == 'inbox':
+            self.sendNegativeResponse(
+                tag,
+                'You cannot rename the inbox, or '
+                'rename another mailbox to inbox.')
+            return
+
+        def _renameCb(_):
+            self.sendPositiveResponse(tag, 'Mailbox renamed')
+
+        def _renameEb(failure):
+            m = failure.value
+            if failure.check(TypeError):
+                self.sendBadResponse(tag, 'Invalid command syntax')
+            elif failure.check(imap4.MailboxException):
+                self.sendNegativeResponse(tag, str(m))
+            else:
+                log.err()
+                self.sendBadResponse(
+                    tag,
+                    "Server error encountered while "
+                    "renaming mailbox")
+        d = self.account.rename(oldname, newname)
+        d.addCallbacks(_renameCb, _renameEb)
+        return d
+
+    auth_RENAME = (do_RENAME, arg_astring, arg_astring)
+    select_RENAME = auth_RENAME
 
     # Need to override the command table after patching
     # arg_astring and arg_literal
@@ -383,9 +444,9 @@ class LeapIMAPServer(imap4.IMAP4Server):
     do_LOGIN = imap4.IMAP4Server.do_LOGIN
     do_CREATE = imap4.IMAP4Server.do_CREATE
     do_DELETE = imap4.IMAP4Server.do_DELETE
-    do_RENAME = imap4.IMAP4Server.do_RENAME
-    #do_SUBSCRIBE = imap4.IMAP4Server.do_SUBSCRIBE
-    do_UNSUBSCRIBE = imap4.IMAP4Server.do_UNSUBSCRIBE
+    # do_RENAME = imap4.IMAP4Server.do_RENAME
+    # do_SUBSCRIBE = imap4.IMAP4Server.do_SUBSCRIBE
+    # do_UNSUBSCRIBE = imap4.IMAP4Server.do_UNSUBSCRIBE
     do_STATUS = imap4.IMAP4Server.do_STATUS
     do_APPEND = imap4.IMAP4Server.do_APPEND
     do_COPY = imap4.IMAP4Server.do_COPY

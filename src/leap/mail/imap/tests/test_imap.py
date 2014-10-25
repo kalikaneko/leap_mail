@@ -383,7 +383,7 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         """
         Test whether we can rename a mailbox
         """
-        LeapIMAPServer.theAccount.addMailbox('oldmbox')
+        d0 = lambda: LeapIMAPServer.theAccount.addMailbox('oldmbox')
 
         def login():
             return self.client.login(TEST_USER, TEST_PASSWD)
@@ -392,6 +392,7 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
             return self.client.rename('oldmbox', 'newname')
 
         d1 = self.connected.addCallback(strip(login))
+        d1.addCallback(strip(d0))
         d1.addCallbacks(strip(rename), self._ebGeneral)
         d1.addCallbacks(self._cbStopClient, self._ebGeneral)
         d2 = self.loopback()
@@ -433,8 +434,9 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         """
         Try to rename hierarchical mailboxes
         """
-        LeapIMAPServer.theAccount.create('oldmbox/m1')
-        LeapIMAPServer.theAccount.create('oldmbox/m2')
+        acc = LeapIMAPServer.theAccount
+        acc.create('oldmbox/m1')
+        acc.create('oldmbox/m2')
 
         def login():
             return self.client.login(TEST_USER, TEST_PASSWD)
@@ -482,8 +484,10 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         """
         Test whether we can unsubscribe from a set of mailboxes
         """
-        LeapIMAPServer.theAccount.subscribe('this/mbox')
-        LeapIMAPServer.theAccount.subscribe('that/mbox')
+        acc = LeapIMAPServer.theAccount
+
+        dc1 = lambda: acc.subscribe('this/mbox')
+        dc2 = lambda: acc.subscribe('that/mbox')
 
         def login():
             return self.client.login(TEST_USER, TEST_PASSWD)
@@ -495,6 +499,8 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
             return LeapIMAPServer.theAccount.getSubscriptions()
 
         d1 = self.connected.addCallback(strip(login))
+        d1.addCallback(strip(dc1))
+        d1.addCallback(strip(dc2))
         d1.addCallbacks(strip(unsubscribe), self._ebGeneral)
         d1.addCallbacks(self._cbStopClient, self._ebGeneral)
         d2 = self.loopback()

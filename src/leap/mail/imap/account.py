@@ -350,18 +350,26 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
             if new in self.mailboxes:
                 raise imap4.MailboxCollision(repr(new))
 
-        def update_mbox_doc_name(old, mbox):
+        rename_deferreds = []
+
+        def update_mbox_doc_name(old, mbox, deferred):
             mbox.content[self.MBOX_KEY] = new
             self.__mailboxes.discard(old)
-            self._soledad.put_doc(mbox)
+            d = self._soledad.put_doc(mbox)
+            d.addCallback(lambda r: deferred.callback(True))
 
         for (old, new) in inferiors:
             self._memstore.rename_fdocs_mailbox(old, new)
+
+            d0 = defer.Deferred()
             d = self._get_mailbox_by_name(old)
             d.addCallback(lambda mbox_name: update_mbox_doc_name(
-                old, mbox_name))
+                old, mbox_name, d0))
+            rename_deferreds.append(d0)
 
-        self._load_mailboxes()
+        d1 = defer.gatherResults(rename_deferreds)
+        d1.addCallback(lambda _: self._load_mailboxes())
+        return d1
 
     def _inferiorNames(self, name):
         """
@@ -452,6 +460,7 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
 
         :param name: name of the mailbox
         :type name: str
+        :rtype: Deferred
         """
         name = self._parse_mailbox_name(name)
 
@@ -468,14 +477,15 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
 
         :param name: name of the mailbox
         :type name: str
+        :rtype: Deferred
         """
         name = self._parse_mailbox_name(name)
 
         def check_and_unsubscribe(subscriptions):
-            if name not in self.subscriptions:
+            if name not in subscriptions:
                 raise imap4.MailboxException(
                     "Not currently subscribed to %r" % name)
-            self._set_subscription(name, False)
+            return self._set_subscription(name, False)
         d = self._get_subscriptions()
         d.addCallback(check_and_unsubscribe)
         return d
