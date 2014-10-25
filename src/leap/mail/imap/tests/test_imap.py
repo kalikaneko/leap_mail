@@ -758,13 +758,12 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
                       '\\Deleted', '\\Draft', '\\Recent', 'List'),
             'READ-WRITE': False})
 
-    def _listSetup(self, f):
-        LeapIMAPServer.theAccount.addMailbox('root/subthingl',
-                                             creation_ts=42)
-        LeapIMAPServer.theAccount.addMailbox('root/another-thing',
-                                             creation_ts=42)
-        LeapIMAPServer.theAccount.addMailbox('non-root/subthing',
-                                             creation_ts=42)
+    def _listSetup(self, f, f2=None):
+        acc = LeapIMAPServer.theAccount
+
+        dc1 = lambda: acc.addMailbox('root/subthing', creation_ts=42)
+        dc2 = lambda: acc.addMailbox('root/another-thing', creation_ts=42)
+        dc3 = lambda: acc.addMailbox('non-root/subthing', creation_ts=42)
 
         def login():
             return self.client.login(TEST_USER, TEST_PASSWD)
@@ -774,6 +773,13 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
 
         self.listed = None
         d1 = self.connected.addCallback(strip(login))
+        d1.addCallback(strip(dc1))
+        d1.addCallback(strip(dc2))
+        d1.addCallback(strip(dc3))
+
+        if f2 is not None:
+            d1.addCallback(f2)
+
         d1.addCallbacks(strip(f), self._ebGeneral)
         d1.addCallbacks(listed, self._ebGeneral)
         d1.addCallbacks(self._cbStopClient, self._ebGeneral)
@@ -790,7 +796,7 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         d.addCallback(lambda listed: self.assertEqual(
             sortNest(listed),
             sortNest([
-                (SoledadMailbox.INIT_FLAGS, "/", "root/subthingl"),
+                (SoledadMailbox.INIT_FLAGS, "/", "root/subthing"),
                 (SoledadMailbox.INIT_FLAGS, "/", "root/another-thing")
             ])
         ))
@@ -800,13 +806,18 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         """
         Test LSub command
         """
-        LeapIMAPServer.theAccount.subscribe('root/subthingl2')
+        acc = LeapIMAPServer.theAccount
+
+        def subs_mailbox():
+            # why not client.subscribe instead?
+            return acc.subscribe('root/subthing')
 
         def lsub():
             return self.client.lsub('root', '%')
-        d = self._listSetup(lsub)
+
+        d = self._listSetup(lsub, strip(subs_mailbox))
         d.addCallback(self.assertEqual,
-                      [(SoledadMailbox.INIT_FLAGS, "/", "root/subthingl2")])
+                      [(SoledadMailbox.INIT_FLAGS, "/", "root/subthing")])
         return d
 
     def testStatus(self):
@@ -816,10 +827,7 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
         acc = LeapIMAPServer.theAccount
 
         def add_mailbox():
-            print "Adding mailbox"
             return acc.addMailbox('root/subthings')
-
-        #acc.callWhenReady(add_mailbox)
 
         # XXX FIXME ---- should populate this a little bit,
         # with unseen etc...

@@ -310,6 +310,73 @@ class LeapIMAPServer(imap4.IMAP4Server):
         return self._fileLiteral(size, literalPlus)
         #############################
 
+    # --------------------------------- isSubscribed patch
+    # TODO -- send patch upstream.
+    # There is a bug in twisted implementation:
+    # in cbListWork, it's assumed that account.isSubscribed IS a callable,
+    # although in the interface documentation it's stated that it can be
+    # a deferred.
+
+    def _listWork(self, tag, ref, mbox, sub, cmdName):
+        mbox = self._parseMbox(mbox)
+        mailboxes = maybeDeferred(self.account.listMailboxes, ref, mbox)
+        mailboxes.addCallback(self._cbSubscribed)
+        mailboxes.addCallback(
+            self._cbListWork, tag, sub, cmdName,
+            ).addErrback(self._ebListWork, tag)
+
+    def _cbSubscribed(self, mailboxes):
+        subscribed = [
+            maybeDeferred(self.account.isSubscribed, name)
+            for (name, box) in mailboxes]
+
+        def get_mailboxes_and_subs(result):
+            subscribed = [i[0] for i, yes in zip(mailboxes, result) if yes]
+            return mailboxes, subscribed
+
+        d = defer.gatherResults(subscribed)
+        d.addCallback(get_mailboxes_and_subs)
+        return d
+
+    def _cbListWork(self, mailboxes_subscribed, tag, sub, cmdName):
+        mailboxes, subscribed = mailboxes_subscribed
+
+        for (name, box) in mailboxes:
+            if not sub or name in subscribed:
+                flags = box.getFlags()
+                delim = box.getHierarchicalDelimiter()
+                resp = (imap4.DontQuoteMe(cmdName),
+                        map(imap4.DontQuoteMe, flags),
+                        delim, name.encode('imap4-utf-7'))
+                self.sendUntaggedResponse(
+                    imap4.collapseNestedLists(resp))
+        self.sendPositiveResponse(tag, '%s completed' % (cmdName,))
+    # -------------------- end isSubscribed patch -----------
+
+    def do_SUBSCRIBE(self, tag, name):
+        # subscribe method had also to be changed to accomodate
+        # deferred
+        name = self._parseMbox(name)
+
+        def _subscribeCb(_):
+            self.sendPositiveResponse(tag, 'Subscribed')
+
+        def _subscribeEb(failure):
+            m = failure.value
+            if failure.check(imap4.MailboxException):
+                self.sendNegativeResponse(tag, str(m))
+            else:
+                self.sendBadResponse(
+                    tag,
+                    "Server error encountered while subscribing to mailbox")
+                log.err()
+
+        d = self.account.subscribe(name)
+        d.addCallbacks(_subscribeCb, _subscribeEb)
+
+    auth_SUBSCRIBE = (do_SUBSCRIBE, arg_astring)
+    select_SUBSCRIBE = auth_SUBSCRIBE
+
     # Need to override the command table after patching
     # arg_astring and arg_literal
 
@@ -317,14 +384,14 @@ class LeapIMAPServer(imap4.IMAP4Server):
     do_CREATE = imap4.IMAP4Server.do_CREATE
     do_DELETE = imap4.IMAP4Server.do_DELETE
     do_RENAME = imap4.IMAP4Server.do_RENAME
-    do_SUBSCRIBE = imap4.IMAP4Server.do_SUBSCRIBE
+    #do_SUBSCRIBE = imap4.IMAP4Server.do_SUBSCRIBE
     do_UNSUBSCRIBE = imap4.IMAP4Server.do_UNSUBSCRIBE
     do_STATUS = imap4.IMAP4Server.do_STATUS
     do_APPEND = imap4.IMAP4Server.do_APPEND
     do_COPY = imap4.IMAP4Server.do_COPY
 
     _selectWork = imap4.IMAP4Server._selectWork
-    _listWork = imap4.IMAP4Server._listWork
+
     arg_plist = imap4.IMAP4Server.arg_plist
     arg_seqset = imap4.IMAP4Server.arg_seqset
     opt_plist = imap4.IMAP4Server.opt_plist
@@ -367,7 +434,6 @@ class LeapIMAPServer(imap4.IMAP4Server):
     select_APPEND = auth_APPEND
 
     select_COPY = (do_COPY, arg_seqset, arg_astring)
-
 
     #############################################################
     # END of Twisted imap4 patch to support LITERAL+ extension

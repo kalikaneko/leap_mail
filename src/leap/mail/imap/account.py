@@ -377,6 +377,8 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
                 inferiors.append(infname)
         return inferiors
 
+    # TODO ------------------ can we preserve the attr?
+    # maybe add to memory store.
     def isSubscribed(self, name):
         """
         Returns True if user is subscribed to this mailbox.
@@ -384,10 +386,17 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
         :param name: the mailbox to be checked.
         :type name: str
 
-        :rtype: bool
+        :rtype: Deferred (will fire with bool)
         """
-        mbox = self._get_mailbox_by_name(name)
-        return mbox.content.get('subscribed', False)
+        subscribed = self.SUBSCRIBED_KEY
+
+        def is_subscribed(mbox):
+            subs_bool = bool(mbox.content.get(subscribed, False))
+            return subs_bool
+
+        d = self._get_mailbox_by_name(name)
+        d.addCallback(is_subscribed)
+        return d
 
     # TODO ------------------ can we preserve the property?
     # maybe add to memory store.
@@ -421,18 +430,19 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
         # no guarantees of atomicity. We should not be accessing mbox
         # documents concurrently.
 
-        # maybe we should store subscriptions in another
-        # document...
-        if name not in self.mailboxes:
-            self.addMailbox(name)
         subscribed = self.SUBSCRIBED_KEY
 
         def update_subscribed_value(mbox):
-            if mbox is not None:
-                mbox.content[subscribed] = value
-                self._soledad.put_doc(mbox)
+            mbox.content[subscribed] = value
+            return self._soledad.put_doc(mbox)
 
-        d = self._get_mailbox_by_name(name)
+        # maybe we should store subscriptions in another
+        # document...
+        if name not in self.mailboxes:
+            d = self.addMailbox(name)
+            d.addCallback(lambda v: self._get_mailbox_by_name(name))
+        else:
+            d = self._get_mailbox_by_name(name)
         d.addCallback(update_subscribed_value)
         return d
 
@@ -447,9 +457,10 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
 
         def check_and_subscribe(subscriptions):
             if name not in subscriptions:
-                self._set_subscription(name, True)
+                return self._set_subscription(name, True)
         d = self._get_subscriptions()
         d.addCallback(check_and_subscribe)
+        return d
 
     def unsubscribe(self, name):
         """
@@ -467,6 +478,7 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
             self._set_subscription(name, False)
         d = self._get_subscriptions()
         d.addCallback(check_and_unsubscribe)
+        return d
 
     def getSubscriptions(self):
         return self._get_subscriptions()
