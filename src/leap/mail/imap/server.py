@@ -438,12 +438,37 @@ class LeapIMAPServer(imap4.IMAP4Server):
     auth_RENAME = (do_RENAME, arg_astring, arg_astring)
     select_RENAME = auth_RENAME
 
+    def do_CREATE(self, tag, name):
+        name = self._parseMbox(name)
+
+        def _createEb(failure):
+            c = failure.value
+            if failure.check(imap4.MailboxException):
+                self.sendNegativeResponse(tag, str(c))
+            else:
+                log.err()
+                self.sendBadResponse(
+                    tag, "Server error encountered while creating mailbox")
+
+        def _createCb(result):
+            if result:
+                self.sendPositiveResponse(tag, 'Mailbox created')
+            else:
+                self.sendNegativeResponse(tag, 'Mailbox not created')
+
+        d = self.account.create(name)
+        d.addCallbacks(_createCb, _createEb)
+        return d
+
+    auth_CREATE = (do_CREATE, arg_astring)
+    select_CREATE = auth_CREATE
+
     # Need to override the command table after patching
     # arg_astring and arg_literal
 
     do_LOGIN = imap4.IMAP4Server.do_LOGIN
-    do_CREATE = imap4.IMAP4Server.do_CREATE
     do_DELETE = imap4.IMAP4Server.do_DELETE
+    # do_CREATE = imap4.IMAP4Server.do_CREATE
     # do_RENAME = imap4.IMAP4Server.do_RENAME
     # do_SUBSCRIBE = imap4.IMAP4Server.do_SUBSCRIBE
     # do_UNSUBSCRIBE = imap4.IMAP4Server.do_UNSUBSCRIBE

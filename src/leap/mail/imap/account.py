@@ -110,9 +110,14 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
             self._initialized = True
             self._deferred_initialization.callback(None)
 
+        def load_mbox_cache(result):
+            d = self._load_mailboxes()
+            d.addCallback(lambda _: result)
+            return d
+
         d = self.initialize_db()
 
-        d.addCallback(lambda r: self._load_mailboxes())
+        d.addCallback(load_mbox_cache)
         d.addCallback(add_mailbox_if_none)
         d.addCallback(finish_initialization)
 
@@ -222,21 +227,29 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
         mbox[self.MBOX_KEY] = name
         mbox[self.CREATED_KEY] = creation_ts
 
+        def load_mbox_cache(result):
+            d = self._load_mailboxes()
+            d.addCallback(lambda _: result)
+            return d
+
         d = self._soledad.create_doc(mbox)
-        d.addCallback(lambda r: self._load_mailboxes())
+        d.addCallback(load_mbox_cache)
         return d
 
     def create(self, pathspec):
         """
         Create a new mailbox from the given hierarchical name.
 
-        :param pathspec: The full hierarchical name of a new mailbox to create.
-                         If any of the inferior hierarchical names to this one
-                         do not exist, they are created as well.
+        :param pathspec:
+            The full hierarchical name of a new mailbox to create.
+            If any of the inferior hierarchical names to this one
+            do not exist, they are created as well.
         :type pathspec: str
 
-        :return: A true value if the creation succeeds.
-        :rtype: bool
+        :return:
+            A deferred that will fire with a true value if the creation
+            succeeds.
+        :rtype: Deferred
 
         :raise MailboxException: Raised if this mailbox cannot be added.
         """
@@ -244,18 +257,43 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
         paths = filter(
             None,
             self._parse_mailbox_name(pathspec).split('/'))
+
+        subs = []
+        sep = '/'
+
         for accum in range(1, len(paths)):
             try:
-                self.addMailbox('/'.join(paths[:accum]))
+                partial = sep.join(paths[:accum])
+                d = self.addMailbox(partial)
+                subs.append(d)
             except imap4.MailboxCollision:
                 pass
         try:
-            self.addMailbox('/'.join(paths))
+            df = self.addMailbox(sep.join(paths))
         except imap4.MailboxCollision:
             if not pathspec.endswith('/'):
-                return False
-        self._load_mailboxes()
-        return True
+                df = defer.succeed(False)
+            else:
+                df = defer.succeed(True)
+        finally:
+            subs.append(df)
+
+        def all_good(result):
+            return all(result)
+
+        def load_mbox_cache(result):
+            d = self._load_mailboxes()
+            d.addCallback(lambda _: result)
+            return d
+
+        if subs:
+            d1 = defer.gatherResults(subs, consumeErrors=True)
+            d1.addCallback(load_mbox_cache)
+            d1.addCallback(all_good)
+        else:
+            d1 = defer.succeed(False)
+            d1.addCallback(load_mbox_cache)
+        return d1
 
     def select(self, name, readwrite=1):
         """
@@ -358,6 +396,11 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
             d = self._soledad.put_doc(mbox)
             d.addCallback(lambda r: deferred.callback(True))
 
+        def load_mbox_cache(result):
+            d = self._load_mailboxes()
+            d.addCallback(lambda _: result)
+            return d
+
         for (old, new) in inferiors:
             self._memstore.rename_fdocs_mailbox(old, new)
 
@@ -368,7 +411,7 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
             rename_deferreds.append(d0)
 
         d1 = defer.gatherResults(rename_deferreds)
-        d1.addCallback(lambda _: self._load_mailboxes())
+        d1.addCallback(load_mbox_cache)
         return d1
 
     def _inferiorNames(self, name):
