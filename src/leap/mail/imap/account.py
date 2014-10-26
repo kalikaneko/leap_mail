@@ -390,27 +390,26 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
 
         rename_deferreds = []
 
-        def update_mbox_doc_name(old, mbox, deferred):
-            mbox.content[self.MBOX_KEY] = new
-            self.__mailboxes.discard(old)
-            d = self._soledad.put_doc(mbox)
-            d.addCallback(lambda r: deferred.callback(True))
-
         def load_mbox_cache(result):
             d = self._load_mailboxes()
             d.addCallback(lambda _: result)
             return d
 
+        def update_mbox_doc_name(mbox, oldname, newname, update_deferred):
+            mbox.content[self.MBOX_KEY] = newname
+            d = self._soledad.put_doc(mbox)
+            d.addCallback(lambda r: update_deferred.callback(True))
+
         for (old, new) in inferiors:
+            self.__mailboxes.discard(old)
             self._memstore.rename_fdocs_mailbox(old, new)
 
             d0 = defer.Deferred()
             d = self._get_mailbox_by_name(old)
-            d.addCallback(lambda mbox_name: update_mbox_doc_name(
-                old, mbox_name, d0))
+            d.addCallback(update_mbox_doc_name, old, new, d0)
             rename_deferreds.append(d0)
 
-        d1 = defer.gatherResults(rename_deferreds)
+        d1 = defer.gatherResults(rename_deferreds, consumeErrors=True)
         d1.addCallback(load_mbox_cache)
         return d1
 

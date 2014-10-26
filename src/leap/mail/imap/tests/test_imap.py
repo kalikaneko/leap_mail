@@ -461,7 +461,7 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
     def _cbTestHierarchicalRename(self, ignored):
         mboxes = LeapIMAPServer.theAccount.mailboxes
         expected = ['INBOX', 'newname', 'newname/m1', 'newname/m2']
-        self.assertEqual(mboxes, [s for s in expected])
+        self.assertEqual(sorted(mboxes), sorted([s for s in expected]))
 
     def testSubscribe(self):
         """
@@ -538,7 +538,7 @@ class LeapIMAP4ServerTestCase(IMAP4HelperMixin, unittest.TestCase):
             return d
 
         d1 = self.connected.addCallback(strip(login))
-        d1.addCallback(d0)
+        d1.addCallback(strip(d0))
         d1.addCallback(strip(select))
         d1.addErrback(self._ebGeneral)
 

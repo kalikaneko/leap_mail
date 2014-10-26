@@ -421,6 +421,7 @@ class LeapIMAPServer(imap4.IMAP4Server):
 
         def _renameEb(failure):
             m = failure.value
+            print "rename failure!"
             if failure.check(TypeError):
                 self.sendBadResponse(tag, 'Invalid command syntax')
             elif failure.check(imap4.MailboxException):
@@ -431,6 +432,7 @@ class LeapIMAPServer(imap4.IMAP4Server):
                     tag,
                     "Server error encountered while "
                     "renaming mailbox")
+
         d = self.account.rename(oldname, newname)
         d.addCallbacks(_renameCb, _renameEb)
         return d
