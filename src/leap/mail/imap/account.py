@@ -332,17 +332,20 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
         :param name: the mailbox to be deleted
         :type name: str
 
-        :param force: if True, it will not check for noselect flag or inferior
-                      names. use with care.
+        :param force:
+            if True, it will not check for noselect flag or inferior
+            names. use with care.
         :type force: bool
+        :rtype: Deferred
         """
         name = self._parse_mailbox_name(name)
 
         if name not in self.mailboxes:
-            raise imap4.MailboxException("No such mailbox: %r" % name)
+            err = imap4.MailboxException("No such mailbox: %r" % name)
+            return defer.fail(err)
         mbox = self.getMailbox(name)
 
-        if force is False:
+        if not force:
             # See if this box is flagged \Noselect
             # XXX use mbox.flags instead?
             mbox_flags = mbox.getFlags()
@@ -351,11 +354,12 @@ class SoledadBackedAccount(WithMsgFields, IndexedDB, MBoxParser):
                 # as part of their root.
                 for others in self.mailboxes:
                     if others != name and others.startswith(name):
-                        raise imap4.MailboxException, (
+                        err = imap4.MailboxException(
                             "Hierarchically inferior mailboxes "
                             "exist and \\Noselect is set")
+                        return defer.fail(err)
         self.__mailboxes.discard(name)
-        mbox.destroy()
+        return mbox.destroy()
 
         # XXX FIXME --- not honoring the inferior names...
 

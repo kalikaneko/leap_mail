@@ -533,21 +533,30 @@ class SoledadMailbox(WithMsgFields, MBoxParser):
 
         Should cleanup resources, and set the \\Noselect flag
         on the mailbox.
+
         """
         # XXX this will overwrite all the existing flags!
         # should better simply addFlag
         self.setFlags((self.NOSELECT_FLAG,))
-        self.deleteAllDocs()
 
         # XXX removing the mailbox in situ for now,
         # we should postpone the removal
 
-        # XXX move to memory store??
-        mbox_doc = self._get_mbox_doc()
-        if mbox_doc is None:
-            # memory-only store!
-            return
-        self._soledad.delete_doc(self._get_mbox_doc())
+        def remove_mbox_doc(ignored):
+            # XXX move to memory store??
+
+            def _remove_mbox_doc(doc):
+                if doc is None:
+                    # memory-only store!
+                    return defer.succeed(True)
+                return self._soledad.delete_doc(doc)
+
+            doc = self._get_mbox_doc()
+            return _remove_mbox_doc(doc)
+
+        d = self.deleteAllDocs()
+        d.addCallback(remove_mbox_doc)
+        return d
 
     def _close_cb(self, result):
         self.closed = True
@@ -1017,9 +1026,16 @@ class SoledadMailbox(WithMsgFields, MBoxParser):
         """
         Delete all docs in this mailbox
         """
-        docs = self.messages.get_all_docs()
-        for doc in docs:
-            self.messages._soledad.delete_doc(doc)
+        def del_all_docs(docs):
+            todelete = []
+            for doc in docs:
+                d = self.messages._soledad.delete_doc(doc)
+                todelete.append(d)
+            return defer.gatherResults(todelete)
+
+        d = self.messages.get_all_docs()
+        d.addCallback(del_all_docs)
+        return d
 
     def unset_recent_flags(self, uid_seq):
         """
