@@ -619,8 +619,8 @@ class MessageCollection(object):
             doc_id = wrapper.mdoc.doc_id
             if not doc_id:
                 # --- BUG -----------------------------------------
-                # XXX why from time to time mdoc doesn't have doc_id
-                # here???
+                # XXX watch out, sometimes mdoc doesn't have doc_id
+                # but it has future_id. Should be solved already.
                 logger.error("BUG: (please report) Null doc_id for "
                              "document %s" %
                              (wrapper.mdoc.serialize(),))

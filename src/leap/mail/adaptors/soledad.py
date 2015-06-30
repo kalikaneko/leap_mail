@@ -119,8 +119,8 @@ class SoledadDocumentWrapper(models.DocumentWrapper):
         instead (that's the preferred way of creating documents from
         the wrapper object).
 
-        :return: a deferred that will fire when the underlying
-                 Soledad document has been created.
+        :return: a deferred that will fire with this SoledadDocumentWrapper
+                 when the underlying Soledad document has been created.
         :rtype: Deferred
         """
         leap_assert(self._doc_id is None,
@@ -129,7 +129,7 @@ class SoledadDocumentWrapper(models.DocumentWrapper):
         def update_doc_id(doc):
             self._doc_id = doc.doc_id
             self.set_future_doc_id(None)
-            return doc
+            return self
 
         def update_wrapper(failure):
             # In the case of some copies (for instance, from one folder to
