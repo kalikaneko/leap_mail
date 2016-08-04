@@ -10,6 +10,7 @@ CORPUS = {
     'simple': 'rfc822.message',
     'multimin': 'rfc822.multi-minimal.message',
     'multisigned': 'rfc822.multi-signed.message',
+    'bounced': 'rfc822.bounce.message',
 }
 
 _here = os.path.dirname(__file__)
@@ -54,6 +55,7 @@ def test_multi_signed():
     parts = walk.get_parts(msg)
 
     ctypes = [part['ctype'] for part in parts]
+    # TODO this respects order?
     assert ctypes == [
         'multipart/signed',
         'multipart/mixed',
@@ -70,7 +72,37 @@ def test_multi_signed():
     _second = tree['part_map'][2]
     assert len(_first['part_map']) == 3
     assert(_second['multi'] is False)
-    # assert tree == []
+
+
+def test_bounce_mime():
+    msg = _parse('bounced')
+    parts = walk.get_parts(msg)
+    tree = walk.walk_msg_tree(parts)
+
+    ctypes = [tree['part_map'][index]['ctype']
+              for index in sorted(tree['part_map'].keys())]
+    import pprint
+    pprint.pprint(tree['part_map'])
+    third = tree['part_map'][3]
+
+    three_one_ctype = third['part_map'][1]['headers'][
+        'Content-Type'].split(';')[0]
+    assert three_one_ctype == 'multipart/signed'
+
+    assert ctypes == [
+        'text/plain',
+        'message/delivery-status',
+        'message/rfc822']
+
+    # XXX BUG -- error while parsing...
+    """
+    >>> msg.get_payload()[2].items()
+    [('Content-Description', 'Undelivered Message'), ('Content-Type',
+        'message/rfc822')]
+    >>> msg.get_payload()[2].get_payload()
+    [<email.message.Message instance at 0x7f5bfba743f8>]
+    """
+    # XXX check that there's no 0-based subpart, that's a  BUG
 
 
 # utils

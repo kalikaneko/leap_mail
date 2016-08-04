@@ -43,7 +43,6 @@ Reporting-MTA: dns; dev1.dev.pixelated-project.org
 X-Postfix-Queue-ID: 8F60183010
 X-Postfix-Sender: rfc822; yoyo@dev.pixelated-project.org
 Arrival-Date: Thu, 16 Jun 2016 14:53:33 +0200 (CEST)
-
 Final-Recipient: rfc822; nobody@leap.se
 Original-Recipient: rfc822;nobody@leap.se
 Action: failed

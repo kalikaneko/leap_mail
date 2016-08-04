@@ -18,6 +18,7 @@
 Utilities for walking along a message tree.
 """
 from copy import deepcopy
+from email.parser import Parser
 
 from cryptography.hazmat.backends.multibackend import MultiBackend
 from cryptography.hazmat.backends.openssl.backend import (
@@ -28,11 +29,7 @@ from leap.mail.utils import first
 
 crypto_backend = MultiBackend([OpenSSLBackend()])
 
-
-PART_MAP = 'part_map'
-HEADERS = 'headers'
-PHASH = 'phash'
-BODY = 'body'
+_parser = Parser()
 
 
 def get_hash(s):
@@ -43,21 +40,34 @@ def get_hash(s):
 
 def get_parts(msg):
     """
-    Get interesting message parts
+    Gather attributes about each of the message parts.
+    Returns a list with dictionaries containing the relevant information about
+    each of the parts in the recursive descent of the mime tree.
     """
-    return [
-        {'multi': part.is_multipart(),
-         'ctype': part.get_content_type(),
-         'size': len(part.as_string()),
-         'parts':
-             len(part.get_payload())
-             if isinstance(part.get_payload(), list)
-             else 1,
-         'headers': part.items(),
-         'phash':
-             get_hash(part.get_payload())
-             if not part.is_multipart()
-             else None} for part in msg.walk()]
+    list_of_parts = []
+    parts = list(msg.walk())
+    for idx, part in enumerate(parts):
+        part_dict = {
+            'multi': part.is_multipart(),
+            'ctype': part.get_content_type(),
+            'size': len(part.as_string()),
+            'parts':
+                len(part.get_payload())
+                if isinstance(part.get_payload(), list)
+                else 1,
+            'headers': part.items(),
+            'phash':
+                get_hash(part.get_payload())
+                if not part.is_multipart()
+                else None}
+
+        # special case
+        if part['content-type'] in ('message/delivery-status',):
+            part_dict['parts'] = 1
+            parts.pop(idx + 1)
+        list_of_parts.append(part_dict)
+
+    return list_of_parts
 
 
 """
@@ -67,6 +77,7 @@ payloads from the original message.
 
 
 def get_parts_vector(parts):
+    """Returns a list of integers that show how many subparts each part has"""
     return (x.get('parts', 1) for x in parts)
 
 
@@ -138,6 +149,11 @@ Chico Marx: I don't like the second party either.
 """
 
 
+def get_subparts_tree(messagestr):
+    msg = _parser.parsestr(messagestr)
+    return walk_msg_tree(get_parts(msg))
+
+
 def walk_msg_tree(parts, body_phash=None):
     """
     Take a list of interesting items of a message subparts structure,
@@ -161,24 +177,28 @@ def walk_msg_tree(parts, body_phash=None):
     :type body_phash: basestring or None
     """
     _parts = deepcopy(parts)
-    parts_vector = list(get_parts_vector(_parts))
-    wv = _get_wrappers_vector(parts_vector)
+
+    # a list of integers representing how many subparts each part has
+    num_parts_vector = list(get_parts_vector(_parts))
+
+    # a list of bools stating whether a subpart is a wrapper
+    is_wrapper_vector = _get_wrappers_vector(num_parts_vector)
 
     # do until no wrapper document is left
-    while any(wv):
-        wrapper_idx = wv.index(True)
+    while any(is_wrapper_vector):
+        wrapper_idx = is_wrapper_vector.index(True)
 
         # how many subparts to pick
-        subp_n = parts_vector[wrapper_idx]
+        subp_n = num_parts_vector[wrapper_idx]
 
         # slice with subparts
         subparts = _parts[wrapper_idx + 1:wrapper_idx + 1 + subp_n]
 
         content_wrapper = {
             'multi': True,
-            PART_MAP: dict((index + 1, part)
+            'part_map': dict((index + 1, part)
                            for index, part in enumerate(subparts)),
-            HEADERS: dict(_parts[wrapper_idx][HEADERS])
+            'headers': dict(_parts[wrapper_idx]['headers'])
         }
 
         # remove subparts and substitute wrapper
@@ -186,50 +206,55 @@ def walk_msg_tree(parts, body_phash=None):
         _parts[wrapper_idx] = content_wrapper
 
         # refresh vectors for this iteration
-        parts_vector = list(get_parts_vector(_parts))
-        wv = _get_wrappers_vector(parts_vector)
+        num_parts_vector = list(get_parts_vector(_parts))
+        is_wrapper_vector = _get_wrappers_vector(num_parts_vector)
 
-    def is_rightmost_item(parts_vector):
-        return all(x == 1 for x in parts_vector)
+    def is_rightmost_item(num_parts_vector):
+        return all(x == 1 for x in num_parts_vector)
 
-    if is_rightmost_item(parts_vector):
+    if is_rightmost_item(num_parts_vector):
         # special case
-        main_pmap = _parts[0].get(PART_MAP, None)
+        main_pmap = _parts[0].get('part_map', None)
         if main_pmap is not None:
             last_part = max(main_pmap.keys())
-            main_pmap[last_part][PART_MAP] = {}
-            for part_idx in range(len(parts_vector) - 1):
-                main_pmap[last_part][PART_MAP][part_idx] = _parts[part_idx + 1]
+            main_pmap[last_part]['part_map'] = {}
+            for part_idx in range(len(num_parts_vector) - 1):
+                main_pmap[last_part]['part_map'][part_idx + 1] = _parts[part_idx + 1]
 
     outer = first(_parts)
-    outer.pop(HEADERS)
+    outer.pop('headers')
 
-    if PART_MAP not in outer:
+    if 'part_map' in outer:
+        parts_dict = outer
+    else:
+        # we have a multipart with 1 part only, so kind of fix it
+        # although it would be prettier if I take this special case at
+        # the beginning of the walk.
         try:
-            inner = _parts[1]
+            inner = second(_parts)
             is_multipart = True
         except IndexError:
             inner = outer
             is_multipart = False
-        # we have a multipart with 1 part only, so kind of fix it
-        # although it would be prettier if I take this special case at
-        # the beginning of the walk.
-        pdoc = {'multi': is_multipart, PART_MAP: {1: inner}}
-        pdoc[PART_MAP][1]['multi'] = False
-        if not pdoc[PART_MAP][1].get(PHASH, None):
-            pdoc[PART_MAP][1][PHASH] = body_phash
 
-        inner_headers = _parts[1].get(HEADERS, None) if (
+        parts_dict = {'multi': is_multipart, 'part_map': {1: inner}}
+        parts_dict['part_map'][1]['multi'] = False
+        if not parts_dict['part_map'][1].get('phash', None):
+            parts_dict['part_map'][1][PHASH] = body_phash
+
+        inner_headers = _parts[1].get('headers', None) if (
             len(_parts) == 2) else None
         if inner_headers:
-            pdoc[PART_MAP][1][HEADERS] = inner_headers
-    else:
-        pdoc = outer
-    pdoc[BODY] = body_phash
-    return pdoc
+            second(parts_dict['part_map'])['headers'] = inner_headers
+
+    parts_dict['body'] = body_phash
+    return parts_dict
 
 
 def _get_wrappers_vector(vparts):
     return [True if vparts[i] != 1 and vparts[i + 1] == 1
             else False
             for i in range(len(vparts) - 1)]
+
+def second(thing):
+    return thing[1]
